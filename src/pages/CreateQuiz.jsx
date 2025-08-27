@@ -8,15 +8,15 @@ const CreateQuiz = () => {
   const [quizData, setQuizData] = useState({
     title: '',
     accessCode: '',
-    totalTimerMinutes: null
+    totalTimerMinutes: null,
+    questionTimerSeconds: null
   })
   const [questions, setQuestions] = useState([
     {
       text: '',
       type: QUESTION_TYPES.MCQ,
       options: ['', '', '', ''],
-      correctAnswer: '',
-      questionTimerSeconds: null
+      correctAnswer: ''
     }
   ])
   const [error, setError] = useState('')
@@ -46,8 +46,7 @@ const CreateQuiz = () => {
         text: '',
         type: QUESTION_TYPES.MCQ,
         options: ['', '', '', ''],
-        correctAnswer: '',
-        questionTimerSeconds: null
+        correctAnswer: ''
       }
     ])
   }
@@ -104,7 +103,8 @@ const CreateQuiz = () => {
             title: quizData.title.trim(),
             access_code: quizData.accessCode.trim().toUpperCase(),
             status: QUIZ_STATUS.WAITING,
-            total_timer_minutes: quizData.totalTimerMinutes || null
+            total_timer_minutes: quizData.totalTimerMinutes || null,
+            question_timer_seconds: quizData.questionTimerSeconds || null
           }
         ])
         .select()
@@ -125,7 +125,7 @@ const CreateQuiz = () => {
         options: q.type === QUESTION_TYPES.MCQ ? q.options : null,
         correct_answer: q.correctAnswer.trim(),
         order_index: index,
-        question_timer_seconds: q.questionTimerSeconds || null
+        question_timer_seconds: quizData.questionTimerSeconds || null
       }))
 
       const { error: questionsError } = await supabase
@@ -142,13 +142,12 @@ const CreateQuiz = () => {
       setSuccess('Quiz created successfully!')
       
       // Clear form
-      setQuizData({ title: '', accessCode: '', totalTimerMinutes: null })
+      setQuizData({ title: '', accessCode: '', totalTimerMinutes: null, questionTimerSeconds: null })
       setQuestions([{
         text: '',
         type: QUESTION_TYPES.MCQ,
         options: ['', '', '', ''],
-        correctAnswer: '',
-        questionTimerSeconds: null
+        correctAnswer: ''
       }])
 
       // Clear session storage
@@ -235,6 +234,21 @@ const CreateQuiz = () => {
                     max="180"
                   />
                   <p className="text-xs text-gray-500 mt-1">Leave empty for no time limit</p>
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Question Timer (seconds)
+                  </label>
+                  <input
+                    type="number"
+                    value={quizData.questionTimerSeconds || ''}
+                    onChange={(e) => setQuizData({ ...quizData, questionTimerSeconds: e.target.value ? parseInt(e.target.value) : null })}
+                    placeholder="Optional - Leave empty for no limit"
+                    className="input-field"
+                    min="5"
+                    max="300"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">This timer will apply to all questions individually</p>
                 </div>
               </div>
             </div>

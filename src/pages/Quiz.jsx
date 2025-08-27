@@ -102,14 +102,14 @@ const Quiz = () => {
               console.log(`Admin moved to question ${newQuestionIndex + 1}`)
               setCurrentQuestionIndex(newQuestionIndex)
               
-              // Set timer for new question if it has one
-              if (questions[newQuestionIndex] && questions[newQuestionIndex].question_timer_seconds) {
-                setQuestionTimeLeft(questions[newQuestionIndex].question_timer_seconds)
-                setQuestionStartTime(new Date())
-              } else {
-                setQuestionTimeLeft(null)
-                setQuestionStartTime(null)
-              }
+                             // Set timer for new question (use global timer from quiz)
+               if (questions[newQuestionIndex] && quiz.question_timer_seconds) {
+                 setQuestionTimeLeft(quiz.question_timer_seconds)
+                 setQuestionStartTime(new Date())
+               } else {
+                 setQuestionTimeLeft(null)
+                 setQuestionStartTime(null)
+               }
             }
           }
         }
@@ -128,9 +128,9 @@ const Quiz = () => {
       setStartTime(new Date())
     }
 
-    // Set question timer for first question
-    if (questions.length > 0 && questions[0].question_timer_seconds) {
-      setQuestionTimeLeft(questions[0].question_timer_seconds)
+    // Set question timer for first question (use global timer from quiz)
+    if (questions.length > 0 && quiz.question_timer_seconds) {
+      setQuestionTimeLeft(quiz.question_timer_seconds)
       setQuestionStartTime(new Date())
     }
   }
@@ -145,10 +145,10 @@ const Quiz = () => {
     // Move to next question or complete quiz
     if (currentQuestionIndex < questions.length - 1) {
       setCurrentQuestionIndex(prev => prev + 1)
-      // Set timer for next question
+      // Set timer for next question (use global timer from quiz)
       const nextQuestion = questions[currentQuestionIndex + 1]
-      if (nextQuestion && nextQuestion.question_timer_seconds) {
-        setQuestionTimeLeft(nextQuestion.question_timer_seconds)
+      if (nextQuestion && quiz.question_timer_seconds) {
+        setQuestionTimeLeft(quiz.question_timer_seconds)
         setQuestionStartTime(new Date())
       } else {
         setQuestionTimeLeft(null)
@@ -200,10 +200,10 @@ const Quiz = () => {
     if (currentQuestionIndex < questions.length - 1) {
       setCurrentQuestionIndex(prev => prev + 1)
       
-      // Set timer for next question
+      // Set timer for next question (use global timer from quiz)
       const nextQuestion = questions[currentQuestionIndex + 1]
-      if (nextQuestion && nextQuestion.question_timer_seconds) {
-        setQuestionTimeLeft(nextQuestion.question_timer_seconds)
+      if (nextQuestion && quiz.question_timer_seconds) {
+        setQuestionTimeLeft(quiz.question_timer_seconds)
         setQuestionStartTime(new Date())
       } else {
         setQuestionTimeLeft(null)
@@ -216,10 +216,10 @@ const Quiz = () => {
     if (currentQuestionIndex > 0) {
       setCurrentQuestionIndex(prev => prev - 1)
       
-      // Set timer for previous question
+      // Set timer for previous question (use global timer from quiz)
       const prevQuestion = questions[currentQuestionIndex - 1]
-      if (prevQuestion && prevQuestion.question_timer_seconds) {
-        setQuestionTimeLeft(prevQuestion.question_timer_seconds)
+      if (prevQuestion && quiz.question_timer_seconds) {
+        setQuestionTimeLeft(quiz.question_timer_seconds)
         setQuestionStartTime(new Date())
       } else {
         setQuestionTimeLeft(null)
