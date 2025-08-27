@@ -192,7 +192,7 @@ const CreateQuiz = () => {
             {/* Quiz Details */}
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">Quiz Details</h2>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Quiz Title
@@ -332,36 +332,19 @@ const CreateQuiz = () => {
                       </div>
                     )}
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Correct Answer
-                        </label>
-                        <input
-                          type="text"
-                          value={question.correctAnswer}
-                          onChange={(e) => updateQuestion(index, 'correctAnswer', e.target.value)}
-                          placeholder="Enter correct answer"
-                          className="input-field"
-                          required
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-sm font-medium text-gray-700 mb-2">
-                          Question Timer (seconds)
-                        </label>
-                        <input
-                          type="number"
-                          value={question.questionTimerSeconds || ''}
-                          onChange={(e) => updateQuestion(index, 'questionTimerSeconds', e.target.value ? parseInt(e.target.value) : null)}
-                          placeholder="Optional - Leave empty for no limit"
-                          className="input-field"
-                          min="5"
-                          max="300"
-                        />
-                        <p className="text-xs text-gray-500 mt-1">Leave empty for no time limit</p>
-                      </div>
-                    </div>
+                                         <div>
+                       <label className="block text-sm font-medium text-gray-700 mb-2">
+                         Correct Answer
+                       </label>
+                       <input
+                         type="text"
+                         value={question.correctAnswer}
+                         onChange={(e) => updateQuestion(index, 'correctAnswer', e.target.value)}
+                         placeholder="Enter correct answer"
+                         className="input-field"
+                         required
+                       />
+                     </div>
                   </div>
                 </div>
               ))}
