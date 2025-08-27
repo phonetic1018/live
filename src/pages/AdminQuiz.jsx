@@ -136,66 +136,49 @@ const AdminQuiz = () => {
   const startQuiz = async () => {
     try {
       console.log('Starting quiz with ID:', quiz.id)
-      console.log('Current quiz status:', quiz.status)
+      setError('')
       
-      // First, let's check if the quiz exists and get its current state
-      const { data: currentQuiz, error: fetchError } = await supabase
+      // Simple approach: just update the status first
+      const { error: statusError } = await supabase
         .from(TABLES.QUIZZES)
-        .select('*')
+        .update({ status: QUIZ_STATUS.PLAYING })
         .eq('id', quiz.id)
-        .single()
 
-      if (fetchError) {
-        console.error('Error fetching current quiz:', fetchError)
-        setError(`Failed to fetch quiz: ${fetchError.message}`)
+      if (statusError) {
+        console.error('Error updating quiz status:', statusError)
+        setError(`Failed to start quiz: ${statusError.message}`)
         return
       }
 
-      console.log('Current quiz data:', currentQuiz)
-
-      // Try to update with all new columns first
-      let updateData, error
-      
+      // Try to update current_question_index if the column exists
       try {
-        const result = await supabase
+        const { error: questionError } = await supabase
           .from(TABLES.QUIZZES)
-          .update({ 
-            status: QUIZ_STATUS.PLAYING,
-            current_question_index: 0
-          })
+          .update({ current_question_index: 0 })
           .eq('id', quiz.id)
-          .select()
-        
-        updateData = result.data
-        error = result.error
-      } catch (columnError) {
-        console.log('Column current_question_index might not exist, trying without it...')
-        
-        // Fallback: try updating only the status
-        const result = await supabase
-          .from(TABLES.QUIZZES)
-          .update({ 
-            status: QUIZ_STATUS.PLAYING
-          })
-          .eq('id', quiz.id)
-          .select()
-        
-        updateData = result.data
-        error = result.error
+
+        if (questionError) {
+          console.log('current_question_index column might not exist, continuing...')
+        }
+      } catch (e) {
+        console.log('current_question_index update failed, continuing...')
       }
 
-      if (error) {
-        console.error('Error starting quiz:', error)
-        console.error('Error details:', error.details)
-        console.error('Error hint:', error.hint)
-        setError(`Failed to start quiz: ${error.message}`)
-        return
+      // Update participants to playing status
+      try {
+        await supabase
+          .from(TABLES.PARTICIPANTS)
+          .update({ status: PARTICIPANT_STATUS.PLAYING })
+          .eq('quiz_id', quiz.id)
+          .eq('status', PARTICIPANT_STATUS.WAITING)
+      } catch (e) {
+        console.log('Participant status update failed, continuing...')
       }
 
-      console.log('Quiz updated successfully:', updateData)
+      console.log('Quiz started successfully')
       setQuizStatus(QUIZ_STATUS.PLAYING)
       setCurrentQuestionIndex(0)
-      setError('')
+      
     } catch (error) {
       console.error('Error in startQuiz:', error)
       setError(`Failed to start quiz: ${error.message}`)
@@ -272,15 +255,18 @@ const AdminQuiz = () => {
 
   const updateQuizQuestion = async (questionIndex) => {
     try {
-      const { error } = await supabase
-        .from(TABLES.QUIZZES)
-        .update({ current_question_index: questionIndex })
-        .eq('id', quiz.id)
+      // Try to update current_question_index if the column exists
+      try {
+        const { error } = await supabase
+          .from(TABLES.QUIZZES)
+          .update({ current_question_index: questionIndex })
+          .eq('id', quiz.id)
 
-      if (error) {
-        console.error('Error updating question:', error)
-        setError('Failed to move to next question')
-        return
+        if (error) {
+          console.log('current_question_index update failed, continuing...')
+        }
+      } catch (e) {
+        console.log('current_question_index column might not exist, continuing...')
       }
 
       setCurrentQuestionIndex(questionIndex)
@@ -297,10 +283,6 @@ const AdminQuiz = () => {
     }
   }
 
-  const completeQuiz = async () => {
-    await stopQuiz()
-  }
-
   const renderQuestion = (question) => {
     if (!question) return null
 
@@ -310,18 +292,22 @@ const AdminQuiz = () => {
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm text-gray-500">Question {currentQuestionIndex + 1} of {questions.length}</span>
             <div className="flex items-center space-x-2">
-              <span className={`px-2 py-1 rounded-full text-xs rounded-full ${
-                question.difficulty === 'easy' ? 'bg-green-100 text-green-800' :
-                question.difficulty === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                'bg-red-100 text-red-800'
-              }`}>
-                {question.difficulty}
-              </span>
-              <span className="text-sm text-gray-500">{question.points} points</span>
+              {question.difficulty && (
+                <span className={`px-2 py-1 rounded-full text-xs ${
+                  question.difficulty === 'easy' ? 'bg-green-100 text-green-800' :
+                  question.difficulty === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                  'bg-red-100 text-red-800'
+                }`}>
+                  {question.difficulty}
+                </span>
+              )}
+              {question.points && (
+                <span className="text-sm text-gray-500">{question.points} points</span>
+              )}
             </div>
           </div>
           <h2 className="text-xl font-semibold text-gray-900 mb-4">
-            {question.question}
+            {question.question || question.text}
           </h2>
           <div className="text-sm text-gray-500 mb-4">
             Type: {question.type.replace('_', ' ').toUpperCase()}
@@ -440,7 +426,7 @@ const AdminQuiz = () => {
                 {quizStatus === 'waiting' && (
                   <button
                     onClick={startQuiz}
-                    className="btn-primary"
+                    className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-medium"
                   >
                     ▶️ Start Quiz
                   </button>
@@ -449,22 +435,22 @@ const AdminQuiz = () => {
                   <>
                     <button
                       onClick={pauseQuiz}
-                      className="btn-secondary"
+                      className="bg-yellow-600 hover:bg-yellow-700 text-white px-6 py-3 rounded-lg font-medium"
                     >
                       ⏸️ Pause Quiz
                     </button>
                     <button
                       onClick={stopQuiz}
-                      className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg font-medium"
+                      className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-medium"
                     >
-                      ⏹️ Stop Quiz
+                      ⏹️ End Quiz
                     </button>
                   </>
                 )}
                 {quizStatus === 'paused' && (
                   <button
                     onClick={startQuiz}
-                    className="btn-primary"
+                    className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-medium"
                   >
                     ▶️ Resume Quiz
                   </button>
@@ -488,7 +474,7 @@ const AdminQuiz = () => {
                   <button
                     onClick={handlePreviousQuestion}
                     disabled={currentQuestionIndex === 0}
-                    className={`px-4 py-2 rounded-lg font-medium ${
+                    className={`px-6 py-3 rounded-lg font-medium ${
                       currentQuestionIndex === 0
                         ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                         : 'bg-blue-600 text-white hover:bg-blue-700'
@@ -506,7 +492,7 @@ const AdminQuiz = () => {
 
                   <button
                     onClick={handleNextQuestion}
-                    className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium"
+                    className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-medium"
                   >
                     {currentQuestionIndex >= questions.length - 1 ? 'Complete Quiz' : 'Next Question →'}
                   </button>
