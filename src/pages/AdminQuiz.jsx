@@ -282,59 +282,49 @@ const AdminQuiz = () => {
 
   const handleNextQuestion = async () => {
     if (currentQuestionIndex < questions.length - 1) {
-      setShowNextTimer(true)
-      setNextTimer(3)
+      const newIndex = currentQuestionIndex + 1
       
-      const timer = setInterval(() => {
-        setNextTimer(prev => {
-          if (prev <= 1) {
-            clearInterval(timer)
-            setShowNextTimer(false)
-            setCurrentQuestionIndex(prev => prev + 1)
-            
-            // Update quiz with new question index
-            supabase
-              .from(TABLES.QUIZZES)
-              .update({ current_question_index: currentQuestionIndex + 1 })
-              .eq('id', quiz.id)
-              .then(({ error }) => {
-                if (error) console.error('Error updating question index:', error)
-              })
-            
-            return 3
-          }
-          return prev - 1
-        })
-      }, 1000)
+      // Update quiz with new question index immediately
+      const { error } = await supabase
+        .from(TABLES.QUIZZES)
+        .update({ current_question_index: newIndex })
+        .eq('id', quiz.id)
+
+      if (error) {
+        console.error('Error updating question index:', error)
+        setError('Failed to move to next question')
+        return
+      }
+
+      // Update local state immediately
+      setCurrentQuestionIndex(newIndex)
+      setOptionCounts({}) // Reset option counts for new question
+      
+      console.log('Moved to question:', newIndex + 1)
     }
   }
 
   const handlePreviousQuestion = async () => {
     if (currentQuestionIndex > 0) {
-      setShowNextTimer(true)
-      setNextTimer(3)
+      const newIndex = currentQuestionIndex - 1
       
-      const timer = setInterval(() => {
-        setNextTimer(prev => {
-          if (prev <= 1) {
-            clearInterval(timer)
-            setShowNextTimer(false)
-            setCurrentQuestionIndex(prev => prev - 1)
-            
-            // Update quiz with new question index
-            supabase
-              .from(TABLES.QUIZZES)
-              .update({ current_question_index: currentQuestionIndex - 1 })
-              .eq('id', quiz.id)
-              .then(({ error }) => {
-                if (error) console.error('Error updating question index:', error)
-              })
-            
-            return 3
-          }
-          return prev - 1
-        })
-      }, 1000)
+      // Update quiz with new question index immediately
+      const { error } = await supabase
+        .from(TABLES.QUIZZES)
+        .update({ current_question_index: newIndex })
+        .eq('id', quiz.id)
+
+      if (error) {
+        console.error('Error updating question index:', error)
+        setError('Failed to move to previous question')
+        return
+      }
+
+      // Update local state immediately
+      setCurrentQuestionIndex(newIndex)
+      setOptionCounts({}) // Reset option counts for new question
+      
+      console.log('Moved to question:', newIndex + 1)
     }
   }
 

@@ -139,28 +139,34 @@ const Quiz = () => {
                          // Update current question index if available
              if (payload.new.current_question_index !== undefined) {
                console.log('Quiz component - Updating question index to:', payload.new.current_question_index)
-               // Show question switching timer
+               // Show question switching timer and update question immediately
                if (payload.new.current_question_index !== currentQuestionIndex) {
+                 // Show timer overlay
                  setShowQuestionTimer(true)
                  setQuestionTimer(3)
                  
+                 // Update question immediately
+                 setCurrentQuestionIndex(payload.new.current_question_index)
+                 initializeQuestionTimer()
+                 // Reset submitted answers for new question
+                 setSubmittedAnswers({})
+                 setShowWaitScreen(false)
+                 // Reset timed out state for new question
+                 setQuestionTimedOut(false)
+                 
+                 // Start countdown timer
                  const countdown = setInterval(() => {
                    setQuestionTimer(prev => {
                      if (prev <= 1) {
                        clearInterval(countdown)
                        setShowQuestionTimer(false)
-                       setCurrentQuestionIndex(payload.new.current_question_index)
-                       initializeQuestionTimer()
-                       // Reset submitted answers for new question
-                       setSubmittedAnswers({})
-                       setShowWaitScreen(false)
-                       // Reset timed out state for new question
-                       setQuestionTimedOut(false)
                        return 3
                      }
                      return prev - 1
                    })
                  }, 1000)
+                 
+                 console.log('Quiz component - Question changed to:', payload.new.current_question_index + 1)
                }
              }
           }
