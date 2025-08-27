@@ -6,12 +6,14 @@ const AdminDashboard = () => {
   const [adminUsername, setAdminUsername] = useState('')
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [quizzes, setQuizzes] = useState([])
+  const [participants, setParticipants] = useState([])
   const [stats, setStats] = useState({
     activeQuizzes: 0,
     totalParticipants: 0,
     completedQuizzes: 0
   })
   const [loading, setLoading] = useState(true)
+  const [selectedQuiz, setSelectedQuiz] = useState(null)
 
   useEffect(() => {
     // Check if admin is authenticated
@@ -45,7 +47,7 @@ const AdminDashboard = () => {
 
       setQuizzes(quizzesData || [])
 
-      // Fetch statistics
+      // Fetch all participants
       const { data: participantsData, error: participantsError } = await supabase
         .from(TABLES.PARTICIPANTS)
         .select('*')
@@ -54,6 +56,8 @@ const AdminDashboard = () => {
         console.error('Error fetching participants:', participantsError)
         return
       }
+
+      setParticipants(participantsData || [])
 
       const activeQuizzes = quizzesData?.filter(q => q.status === QUIZ_STATUS.WAITING || q.status === QUIZ_STATUS.PLAYING).length || 0
       const completedQuizzes = quizzesData?.filter(q => q.status === QUIZ_STATUS.COMPLETED).length || 0
@@ -83,18 +87,45 @@ const AdminDashboard = () => {
   }
 
   const handleCreateQuiz = () => {
-    // Generate a random 6-digit numeric access code
-    const accessCode = Math.floor(100000 + Math.random() * 900000).toString()
-    
-    // Store the access code for the create quiz page
-    sessionStorage.setItem('newQuizAccessCode', accessCode)
     navigateTo('/admin/create-quiz')
+  }
+
+  const generateAccessCode = async (quizId) => {
+    try {
+      // Generate a random 6-digit numeric access code
+      const accessCode = Math.floor(100000 + Math.random() * 900000).toString()
+      
+      // Update the quiz with the new access code
+      const { error } = await supabase
+        .from(TABLES.QUIZZES)
+        .update({ access_code: accessCode })
+        .eq('id', quizId)
+
+      if (error) {
+        console.error('Error generating access code:', error)
+        alert('Failed to generate access code. Please try again.')
+        return
+      }
+
+      alert(`Access code generated: ${accessCode}`)
+      await fetchDashboardData() // Refresh the data
+    } catch (error) {
+      console.error('Error generating access code:', error)
+      alert('Failed to generate access code. Please try again.')
+    }
+  }
+
+  const viewParticipants = (quizId) => {
+    const quizParticipants = participants.filter(p => p.quiz_id === quizId)
+    setSelectedQuiz({ id: quizId, participants: quizParticipants })
   }
 
 
 
   const startQuiz = async (quizId) => {
     try {
+      console.log('AdminDashboard - Starting quiz with ID:', quizId)
+      
       // Get the quiz data first
       const { data: quizData, error: fetchError } = await supabase
         .from(TABLES.QUIZZES)
@@ -107,10 +138,10 @@ const AdminDashboard = () => {
         return
       }
 
-      // Store quiz data in session storage for admin quiz control
-      sessionStorage.setItem('currentQuiz', JSON.stringify(quizData))
+      console.log('AdminDashboard - Quiz data before update:', quizData)
 
       // Update quiz status to PLAYING
+      console.log('AdminDashboard - Updating quiz status to:', QUIZ_STATUS.PLAYING)
       const { error: quizError } = await supabase
         .from(TABLES.QUIZZES)
         .update({ 
@@ -125,6 +156,8 @@ const AdminDashboard = () => {
         return
       }
 
+      console.log('AdminDashboard - Quiz status updated successfully')
+
       // Update all participants in this quiz to PLAYING status
       const { error: participantsError } = await supabase
         .from(TABLES.PARTICIPANTS)
@@ -136,11 +169,18 @@ const AdminDashboard = () => {
         // Don't return here as the quiz was already started
       }
 
-             // Store quiz data in session storage for admin quiz
-       const quiz = quizzes.find(q => q.id === quizId)
-       if (quiz) {
-         sessionStorage.setItem('currentQuiz', JSON.stringify(quiz))
-       }
+      // Get updated quiz data and store in session storage
+      const { data: updatedQuizData, error: fetchUpdatedError } = await supabase
+        .from(TABLES.QUIZZES)
+        .select('*')
+        .eq('id', quizId)
+        .single()
+
+      if (fetchUpdatedError) {
+        console.error('Error fetching updated quiz:', fetchUpdatedError)
+      } else {
+        sessionStorage.setItem('currentQuiz', JSON.stringify(updatedQuizData))
+      }
 
       // Refresh dashboard data
       await fetchDashboardData()
@@ -272,7 +312,9 @@ const AdminDashboard = () => {
                 <div key={quiz.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
                   <div>
                     <h3 className="font-semibold text-gray-900">{quiz.title}</h3>
-                    <p className="text-sm text-gray-600">Code: {quiz.access_code}</p>
+                    <p className="text-sm text-gray-600">
+                      Access Code: {quiz.access_code || 'Not generated'}
+                    </p>
                     <p className="text-xs text-gray-500">Created: {new Date(quiz.created_at).toLocaleDateString()}</p>
                   </div>
                   <div className="flex items-center space-x-2">
@@ -283,23 +325,83 @@ const AdminDashboard = () => {
                     }`}>
                       {quiz.status}
                     </span>
-                    {quiz.status === QUIZ_STATUS.WAITING && (
+                    
+                    {/* Generate Access Code Button */}
+                    {!quiz.access_code && (
+                      <button
+                        onClick={() => generateAccessCode(quiz.id)}
+                        className="btn-outline text-sm bg-green-50 text-green-700 border-green-200 hover:bg-green-100"
+                      >
+                        Generate Code
+                      </button>
+                    )}
+                    
+                    {/* View Participants Button */}
+                    <button
+                      onClick={() => viewParticipants(quiz.id)}
+                      className="btn-outline text-sm bg-blue-50 text-blue-700 border-blue-200 hover:bg-blue-100"
+                    >
+                      View Participants
+                    </button>
+                    
+                    {/* Start Quiz Button */}
+                    {quiz.status === QUIZ_STATUS.WAITING && quiz.access_code && (
                       <button
                         onClick={() => startQuiz(quiz.id)}
-                        className="btn-outline text-sm"
+                        className="btn-outline text-sm bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-100"
                       >
                         Start Quiz
                       </button>
                     )}
-                    <button
-                      onClick={() => joinQuiz(quiz)}
-                      className="btn-outline text-sm"
-                    >
-                      Join
-                    </button>
                   </div>
                 </div>
               ))}
+            </div>
+          </div>
+        )}
+
+        {/* Participants Modal */}
+        {selectedQuiz && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+            <div className="bg-white rounded-lg shadow-lg p-6 max-w-md w-full max-h-96 overflow-y-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">Participants</h3>
+                <button
+                  onClick={() => setSelectedQuiz(null)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              
+              {selectedQuiz.participants.length > 0 ? (
+                <div className="space-y-2">
+                  {selectedQuiz.participants.map((participant) => (
+                    <div key={participant.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                      <div>
+                        <div className="font-medium text-gray-900">{participant.name}</div>
+                        <div className="text-sm text-gray-500">
+                          Joined: {new Date(participant.created_at).toLocaleString()}
+                        </div>
+                      </div>
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${
+                        participant.status === 'waiting' ? 'bg-yellow-100 text-yellow-800' :
+                        participant.status === 'playing' ? 'bg-blue-100 text-blue-800' :
+                        'bg-green-100 text-green-800'
+                      }`}>
+                        {participant.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center text-gray-500 py-8">
+                  <p>No participants have joined yet.</p>
+                  <p className="text-sm mt-2">Share the access code to invite participants.</p>
+                </div>
+              )}
             </div>
           </div>
         )}

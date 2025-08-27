@@ -70,6 +70,143 @@ const CreateQuiz = () => {
     setQuizData(prev => ({ ...prev, access_code: code }))
   }
 
+  // Remove access code generation from quiz creation - it will be generated later
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    setLoading(true)
+    setError('')
+    setSuccess('')
+
+    if (!quizData.title.trim()) {
+      setError('Please enter a quiz title')
+      setLoading(false)
+      return
+    }
+
+    if (questions.length === 0) {
+      setError('Please add at least one question')
+      setLoading(false)
+      return
+    }
+
+    try {
+      // Create quiz without access code - it will be generated later when ready to start
+      const { data: quiz, error: quizError } = await supabase
+        .from(TABLES.QUIZZES)
+        .insert([
+          {
+            title: quizData.title,
+            description: quizData.description,
+            access_code: null, // No access code initially
+            status: QUIZ_STATUS.WAITING,
+            passing_score: quizData.passing_score,
+            show_results: quizData.show_results,
+            allow_retake: quizData.allow_retake,
+            shuffle_questions: quizData.shuffle_questions,
+            total_timer_minutes: quizData.total_timer_minutes,
+            question_timer_seconds: quizData.question_timer_seconds,
+            // Security settings
+            require_https: securitySettings.require_https,
+            require_login: securitySettings.require_login,
+            max_attempts: securitySettings.max_attempts,
+            prevent_backtracking: securitySettings.prevent_backtracking,
+            disable_copy_paste: securitySettings.disable_copy_paste,
+            disable_right_click: securitySettings.disable_right_click,
+            disable_print: securitySettings.disable_print,
+            hide_answers_until_complete: securitySettings.hide_answers_until_complete,
+            require_honor_code: securitySettings.require_honor_code,
+            allow_file_upload: securitySettings.allow_file_upload,
+            ip_restriction_enabled: securitySettings.ip_restriction_enabled,
+            allowed_ip_ranges: securitySettings.allowed_ip_ranges,
+            proctoring_enabled: securitySettings.proctoring_enabled,
+            proctoring_url: securitySettings.proctoring_url
+          }
+        ])
+        .select()
+        .single()
+
+      if (quizError) {
+        console.error('Error creating quiz:', quizError)
+        setError('Failed to create quiz. Please try again.')
+        setLoading(false)
+        return
+      }
+
+      // Create questions
+      const questionsToInsert = questions.map((q, index) => ({
+        quiz_id: quiz.id,
+        question: q.question,
+        type: q.type,
+        options: q.type === QUESTION_TYPES.MCQ ? q.options : [],
+        correct_answer: q.correct_answer,
+        order_index: index,
+        points: q.points,
+        explanation: q.explanation,
+        difficulty: q.difficulty,
+        question_timer_seconds: q.question_timer_seconds
+      }))
+
+      const { error: questionsError } = await supabase
+        .from(TABLES.QUESTIONS)
+        .insert(questionsToInsert)
+
+      if (questionsError) {
+        console.error('Error creating questions:', questionsError)
+        setError('Quiz created but failed to add questions. Please try again.')
+        setLoading(false)
+        return
+      }
+
+      setSuccess('Quiz created successfully! You can now generate an access code when ready to start.')
+      
+      // Reset form
+      setQuizData({
+        title: '',
+        description: '',
+        access_code: '',
+        passing_score: 70,
+        show_results: true,
+        allow_retake: false,
+        shuffle_questions: false,
+        total_timer_minutes: null,
+        question_timer_seconds: null
+      })
+      setQuestions([])
+      setCurrentQuestion({
+        question: '',
+        type: QUESTION_TYPES.MCQ,
+        options: ['', '', '', ''],
+        correct_answer: '',
+        points: 1,
+        explanation: '',
+        difficulty: 'medium',
+        question_timer_seconds: null
+      })
+      setSecuritySettings({
+        require_https: true,
+        require_login: false,
+        max_attempts: 1,
+        prevent_backtracking: true,
+        disable_copy_paste: true,
+        disable_right_click: true,
+        disable_print: true,
+        hide_answers_until_complete: true,
+        require_honor_code: true,
+        allow_file_upload: false,
+        ip_restriction_enabled: false,
+        allowed_ip_ranges: [],
+        proctoring_enabled: false,
+        proctoring_url: ''
+      })
+
+    } catch (error) {
+      console.error('Error creating quiz:', error)
+      setError('An error occurred. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   const handleQuizDataChange = (field, value) => {
     setQuizData(prev => ({ ...prev, [field]: value }))
   }
@@ -131,115 +268,7 @@ const CreateQuiz = () => {
     setQuestions(prev => prev.filter((_, i) => i !== index))
   }
 
-  const handleCreateQuiz = async () => {
-    if (!quizData.title.trim()) {
-      setError('Please enter a quiz title')
-      return
-    }
 
-    if (!quizData.access_code.trim()) {
-      setError('Please enter an access code')
-      return
-    }
-
-    // Validate that access code is exactly 6 digits
-    if (!/^\d{6}$/.test(quizData.access_code)) {
-      setError('Access code must be exactly 6 digits')
-      return
-    }
-
-    if (questions.length === 0) {
-      setError('Please add at least one question')
-      return
-    }
-
-    setLoading(true)
-    setError('')
-
-    try {
-      // Create quiz with security settings
-      const { data: quiz, error: quizError } = await supabase
-        .from(TABLES.QUIZZES)
-        .insert([{
-          ...quizData,
-          ...securitySettings,
-          status: QUIZ_STATUS.WAITING
-        }])
-        .select()
-        .single()
-
-      if (quizError) {
-        console.error('Error creating quiz:', quizError)
-        setError('Failed to create quiz')
-        setLoading(false)
-        return
-      }
-
-      // Create questions
-      const questionsToInsert = questions.map((q, index) => ({
-        quiz_id: quiz.id,
-        question: q.question,
-        type: q.type,
-        options: q.type === QUESTION_TYPES.MCQ ? q.options : [],
-        correct_answer: q.correct_answer,
-        order_index: index,
-        points: q.points,
-        explanation: q.explanation,
-        difficulty: q.difficulty,
-        question_timer_seconds: q.question_timer_seconds
-      }))
-
-      const { error: questionsError } = await supabase
-        .from(TABLES.QUESTIONS)
-        .insert(questionsToInsert)
-
-      if (questionsError) {
-        console.error('Error creating questions:', questionsError)
-        setError('Quiz created but failed to add questions')
-        setLoading(false)
-        return
-      }
-
-      setSuccess(`Quiz "${quizData.title}" created successfully with access code: ${quizData.access_code}`)
-      
-      // Reset form
-      setQuizData({
-        title: '',
-        description: '',
-        access_code: '',
-        passing_score: 70,
-        show_results: true,
-        allow_retake: false,
-        shuffle_questions: false,
-        total_timer_minutes: null,
-        question_timer_seconds: null
-      })
-      setSecuritySettings({
-        require_https: true,
-        require_login: false,
-        max_attempts: 1,
-        prevent_backtracking: true,
-        disable_copy_paste: true,
-        disable_right_click: true,
-        disable_print: true,
-        hide_answers_until_complete: true,
-        require_honor_code: true,
-        allow_file_upload: false,
-        ip_restriction_enabled: false,
-        allowed_ip_ranges: [],
-        proctoring_enabled: false,
-        proctoring_url: ''
-      })
-      setQuestions([])
-      
-      setTimeout(() => setSuccess(''), 5000)
-    } catch (error) {
-      console.error('Error in handleCreateQuiz:', error)
-      setError('An error occurred while creating the quiz')
-    } finally {
-      setLoading(false)
-    }
-  }
 
   const addIPRange = () => {
     const range = prompt('Enter IP range (e.g., 192.168.1.0/24):')
@@ -966,7 +995,7 @@ const CreateQuiz = () => {
           </button>
           
           <button
-            onClick={handleCreateQuiz}
+            onClick={handleSubmit}
             disabled={loading}
             className={`px-8 py-3 rounded-lg font-medium ${
               loading

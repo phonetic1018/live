@@ -4,7 +4,6 @@ import logo from '../assets/logo.png'
 
 const EnterName = () => {
   const [participantName, setParticipantName] = useState('')
-  const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [quiz, setQuiz] = useState(null)
@@ -38,6 +37,12 @@ const EnterName = () => {
     }
 
     try {
+      console.log('Attempting to create participant with data:', {
+        quiz_id: quiz.id,
+        name: participantName.trim(),
+        status: PARTICIPANT_STATUS.WAITING
+      })
+
       // Create participant
       const { data: participant, error: participantError } = await supabase
         .from(TABLES.PARTICIPANTS)
@@ -45,16 +50,17 @@ const EnterName = () => {
           {
             quiz_id: quiz.id,
             name: participantName.trim(),
-            email: email.trim() || null,
             status: PARTICIPANT_STATUS.WAITING
           }
         ])
         .select()
         .single()
 
+      console.log('Participant creation result:', { participant, participantError })
+
       if (participantError) {
         console.error('Error creating participant:', participantError)
-        setError('Failed to join quiz. Please try again.')
+        setError(`Failed to join quiz: ${participantError.message}`)
         setLoading(false)
         return
       }
@@ -111,19 +117,7 @@ const EnterName = () => {
             />
           </div>
 
-          <div>
-            <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
-              Email (Optional)
-            </label>
-            <input
-              type="email"
-              id="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="Enter your email address"
-              className="input-field"
-            />
-          </div>
+
 
           {error && (
             <div className="text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg">

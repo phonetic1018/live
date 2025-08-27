@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { supabase, TABLES, PARTICIPANT_STATUS, QUESTION_TYPES, performanceUtils, rateLimiter, errorHandler } from '../utils/supabaseClient'
+import { supabase, TABLES, PARTICIPANT_STATUS, QUESTION_TYPES } from '../utils/supabaseClient'
 import logo from '../assets/logo.png'
-import PerformanceMonitor from '../components/PerformanceMonitor'
 
 
 const Quiz = () => {
@@ -30,6 +29,12 @@ const Quiz = () => {
     userAnswer: ''
   })
   
+  // Score tracking states
+  const [totalScore, setTotalScore] = useState(0)
+  const [maxPossibleScore, setMaxPossibleScore] = useState(0)
+  const [questionScores, setQuestionScores] = useState({})
+  const [showFinalScore, setShowFinalScore] = useState(false)
+  
   // Question switching timer states
   const [showQuestionTimer, setShowQuestionTimer] = useState(false)
   const [questionTimer, setQuestionTimer] = useState(3)
@@ -43,13 +48,18 @@ const Quiz = () => {
     const quizData = sessionStorage.getItem('currentQuiz')
     const participantData = sessionStorage.getItem('currentParticipant')
     
+    console.log('Quiz component - Session storage data:', { quizData, participantData })
+    
     if (!quizData || !participantData) {
+      console.log('Quiz component - Missing session data, redirecting to home')
       window.location.href = '/'
       return
     }
 
     const quizObj = JSON.parse(quizData)
     const participantObj = JSON.parse(participantData)
+    
+    console.log('Quiz component - Parsed data:', { quizObj, participantObj })
     
     setQuiz(quizObj)
     setParticipant(participantObj)
@@ -102,54 +112,55 @@ const Quiz = () => {
     }
   }, [questionTimeLeft, currentQuestionIndex, quizStatus])
 
-    // Listen for admin-controlled question changes with optimized subscription
+    // Listen for admin-controlled question changes
   useEffect(() => {
     if (!quiz) return
 
-    // Rate limiting check
-    const clientKey = `quiz-${quiz.id}-${participant?.id || 'anonymous'}`
-    if (!rateLimiter.isAllowed(clientKey, 200, 60000)) {
-      console.warn('Rate limit exceeded for quiz subscription')
-      return
-    }
-
-    const quizSubscription = performanceUtils.createOptimizedSubscription(
-      'participant-quiz-control',
-      TABLES.QUIZZES,
-      `id=eq.${quiz.id}`,
-      (payload) => {
-        console.log('Quiz change:', payload)
-        if (payload.new) {
-          // Update quiz status
-          setQuizStatus(payload.new.status)
-          
-          // Update current question index if available
-          if (payload.new.current_question_index !== undefined) {
-            // Show question switching timer
-            if (payload.new.current_question_index !== currentQuestionIndex) {
-              setShowQuestionTimer(true)
-              setQuestionTimer(3)
-              
-              const countdown = setInterval(() => {
-                setQuestionTimer(prev => {
-                  if (prev <= 1) {
-                    clearInterval(countdown)
-                    setShowQuestionTimer(false)
-                    setCurrentQuestionIndex(payload.new.current_question_index)
-                    initializeQuestionTimer()
-                    // Reset submitted answers for new question
-                    setSubmittedAnswers({})
-                    setShowWaitScreen(false)
-                    return 3
-                  }
-                  return prev - 1
-                })
-              }, 1000)
+    const quizSubscription = supabase
+      .channel(`quiz-${quiz.id}`)
+      .on('postgres_changes', 
+        { 
+          event: 'UPDATE', 
+          schema: 'public', 
+          table: TABLES.QUIZZES,
+          filter: `id=eq.${quiz.id}`
+        }, 
+        (payload) => {
+          console.log('Quiz component - Quiz change received:', payload)
+          if (payload.new) {
+            console.log('Quiz component - Updating quiz status to:', payload.new.status)
+            // Update quiz status
+            setQuizStatus(payload.new.status)
+            
+            // Update current question index if available
+            if (payload.new.current_question_index !== undefined) {
+              console.log('Quiz component - Updating question index to:', payload.new.current_question_index)
+              // Show question switching timer
+              if (payload.new.current_question_index !== currentQuestionIndex) {
+                setShowQuestionTimer(true)
+                setQuestionTimer(3)
+                
+                const countdown = setInterval(() => {
+                  setQuestionTimer(prev => {
+                    if (prev <= 1) {
+                      clearInterval(countdown)
+                      setShowQuestionTimer(false)
+                      setCurrentQuestionIndex(payload.new.current_question_index)
+                      initializeQuestionTimer()
+                      // Reset submitted answers for new question
+                      setSubmittedAnswers({})
+                      setShowWaitScreen(false)
+                      return 3
+                    }
+                    return prev - 1
+                  })
+                }, 1000)
+              }
             }
           }
         }
-      }
-    )
+      )
+      .subscribe()
 
     return () => {
       quizSubscription.unsubscribe()
@@ -189,9 +200,40 @@ const Quiz = () => {
     const currentQuestion = questions[currentQuestionIndex]
     const userAnswer = answers[currentQuestion.id] || ''
     
-    // Check if answer is correct
-    const isCorrect = userAnswer === currentQuestion.correct_answer
+    // Check if answer is correct (case-insensitive comparison for text answers)
+    let isCorrect = false
+    
+    if (currentQuestion.type === QUESTION_TYPES.SHORT_ANSWER) {
+      isCorrect = userAnswer.toLowerCase().trim() === currentQuestion.correct_answer.toLowerCase().trim()
+    } else if (currentQuestion.type === QUESTION_TYPES.MCQ || currentQuestion.type === QUESTION_TYPES.TRUE_FALSE) {
+      isCorrect = userAnswer === currentQuestion.correct_answer
+    }
+    
     const points = isCorrect ? (currentQuestion.points || 1) : 0
+    
+    console.log('Question Timeout Debug:', {
+      questionId: currentQuestion.id,
+      questionType: currentQuestion.type,
+      userAnswer: `"${userAnswer}"`,
+      correctAnswer: `"${currentQuestion.correct_answer}"`,
+      isCorrect,
+      points,
+      questionPoints: currentQuestion.points,
+      alreadyScored: !!questionScores[currentQuestion.id]
+    })
+    
+    // Only update scores if this question hasn't been scored yet
+    if (!questionScores[currentQuestion.id]) {
+      setQuestionScores(prev => ({
+        ...prev,
+        [currentQuestion.id]: { isCorrect, points, userAnswer, correctAnswer: currentQuestion.correct_answer }
+      }))
+      setTotalScore(prev => {
+        const newTotal = prev + points
+        console.log('Timeout Score Update:', { prev, points, newTotal })
+        return newTotal
+      })
+    }
     
     // Show feedback
     setFeedbackData({
@@ -227,7 +269,37 @@ const Quiz = () => {
 
   const handleAutoSubmit = () => {
     // Auto-submit quiz when total time expires
-    handleSubmitQuiz()
+    // Calculate final scores for unanswered questions
+    const unansweredQuestions = questions.filter(q => !questionScores[q.id])
+    let finalScore = totalScore
+    
+    unansweredQuestions.forEach(question => {
+      const userAnswer = answers[question.id] || ''
+      let isCorrect = false
+      
+      if (question.type === QUESTION_TYPES.SHORT_ANSWER) {
+        isCorrect = userAnswer.toLowerCase().trim() === question.correct_answer.toLowerCase().trim()
+      } else if (question.type === QUESTION_TYPES.MCQ || question.type === QUESTION_TYPES.TRUE_FALSE) {
+        isCorrect = userAnswer === question.correct_answer
+      }
+      
+      const points = isCorrect ? (question.points || 1) : 0
+      
+      setQuestionScores(prev => ({
+        ...prev,
+        [question.id]: { isCorrect, points, userAnswer, correctAnswer: question.correct_answer }
+      }))
+      
+      finalScore += points
+    })
+    
+    setTotalScore(finalScore)
+    setShowFinalScore(true)
+    
+    // Auto-submit after showing score
+    setTimeout(() => {
+      handleSubmitQuiz()
+    }, 5000) // Show score for 5 seconds before submitting
   }
 
   const fetchQuestions = async (quizId) => {
@@ -245,7 +317,15 @@ const Quiz = () => {
         return
       }
 
+      console.log('Fetched Questions:', data)
+      
       setQuestions(data || [])
+      
+      // Calculate max possible score
+      const maxScore = (data || []).reduce((total, question) => total + (question.points || 1), 0)
+      setMaxPossibleScore(maxScore)
+      
+      console.log('Max Possible Score:', maxScore)
     } catch (error) {
       console.error('Error in fetchQuestions:', error)
       setError('Failed to load quiz questions')
@@ -262,13 +342,6 @@ const Quiz = () => {
   }
 
   const handleAnswerSubmit = useCallback((questionId) => {
-    // Rate limiting check
-    const clientKey = `answer-submit-${participant?.id || 'anonymous'}`
-    if (!rateLimiter.isAllowed(clientKey, 50, 60000)) {
-      setError('Too many answer submissions. Please wait a moment.')
-      return
-    }
-
     const currentQuestion = questions[currentQuestionIndex]
     const userAnswer = answers[questionId] || ''
     
@@ -286,21 +359,50 @@ const Quiz = () => {
       ...prev,
       [questionId]: userAnswer
     }))
-  }, [questions, currentQuestionIndex, answers, participant?.id])
+    
+    // Calculate score for this question (case-insensitive comparison for text answers)
+    let isCorrect = false
+    
+    if (currentQuestion.type === QUESTION_TYPES.SHORT_ANSWER) {
+      isCorrect = userAnswer.toLowerCase().trim() === currentQuestion.correct_answer.toLowerCase().trim()
+    } else if (currentQuestion.type === QUESTION_TYPES.MCQ || currentQuestion.type === QUESTION_TYPES.TRUE_FALSE) {
+      isCorrect = userAnswer === currentQuestion.correct_answer
+    }
+    
+    const points = isCorrect ? (currentQuestion.points || 1) : 0
+    
+    console.log('Answer Submit Debug:', {
+      questionId,
+      questionType: currentQuestion.type,
+      userAnswer: `"${userAnswer}"`,
+      correctAnswer: `"${currentQuestion.correct_answer}"`,
+      isCorrect,
+      points,
+      questionPoints: currentQuestion.points,
+      alreadyScored: !!questionScores[questionId]
+    })
+    
+    // Only update scores if this question hasn't been scored yet
+    if (!questionScores[questionId]) {
+      setQuestionScores(prev => ({
+        ...prev,
+        [questionId]: { isCorrect, points, userAnswer, correctAnswer: currentQuestion.correct_answer }
+      }))
+      setTotalScore(prev => {
+        const newTotal = prev + points
+        console.log('Score Update:', { prev, points, newTotal })
+        return newTotal
+      })
+    }
+  }, [questions, currentQuestionIndex, answers, participant?.id, questionScores])
 
   const handleSubmitQuiz = useCallback(async () => {
     try {
-      // Rate limiting check
-      const clientKey = `quiz-submit-${participant?.id || 'anonymous'}`
-      if (!rateLimiter.isAllowed(clientKey, 10, 60000)) {
-        setError('Too many quiz submissions. Please wait a moment.')
-        return
-      }
-
-      // Calculate time taken for each answer
+      // Calculate time taken for each answer and include score data
       const answerEntries = Object.entries(answers).map(([questionId, answer]) => {
         const question = questions.find(q => q.id === questionId)
         const timeTaken = questionStartTime ? Math.floor((new Date() - questionStartTime) / 1000) : null
+        const scoreData = questionScores[questionId]
         
         return {
           quiz_id: quiz.id,
@@ -308,44 +410,45 @@ const Quiz = () => {
           question_id: questionId,
           answer: answer,
           submitted_at: new Date().toISOString(),
-          time_taken_seconds: timeTaken
+          time_taken_seconds: timeTaken,
+          points_earned: scoreData?.points || 0,
+          is_correct: scoreData?.isCorrect || false
         }
       })
 
-      // Use retry mechanism for database operations
-      await performanceUtils.retryOperation(async () => {
-        const { error } = await supabase
-          .from(TABLES.ANSWERS)
-          .insert(answerEntries)
+      // Save answers to database
+      const { error } = await supabase
+        .from(TABLES.ANSWERS)
+        .insert(answerEntries)
 
-        if (error) {
-          console.error('Error saving answers:', error)
-          throw new Error('Failed to submit answers')
-        }
-      })
+      if (error) {
+        console.error('Error saving answers:', error)
+        throw new Error('Failed to submit answers')
+      }
 
-      // Update participant status to completed
-      await performanceUtils.retryOperation(async () => {
-        const { error: participantError } = await supabase
-          .from(TABLES.PARTICIPANTS)
-          .update({ 
-            status: PARTICIPANT_STATUS.COMPLETED,
-            completed_at: new Date().toISOString()
-          })
-          .eq('id', participant.id)
+      // Update participant status to completed with final score
+      const { error: participantError } = await supabase
+        .from(TABLES.PARTICIPANTS)
+        .update({ 
+          status: PARTICIPANT_STATUS.COMPLETED,
+          completed_at: new Date().toISOString(),
+          score: totalScore,
+          max_score: maxPossibleScore,
+          passed: totalScore >= (quiz?.passing_score || 70)
+        })
+        .eq('id', participant.id)
 
-        if (participantError) {
-          console.error('Error updating participant status:', participantError)
-          throw participantError
-        }
-      })
+      if (participantError) {
+        console.error('Error updating participant status:', participantError)
+        throw participantError
+      }
 
       setQuizCompleted(true)
     } catch (error) {
       console.error('Error in handleSubmitQuiz:', error)
       setError('Failed to submit quiz')
     }
-  }, [answers, questions, questionStartTime, quiz?.id, participant?.id])
+  }, [answers, questions, questionStartTime, quiz?.id, participant?.id, questionScores, totalScore, maxPossibleScore])
 
   const formatTime = (seconds) => {
     if (seconds === null) return null
@@ -436,12 +539,10 @@ const Quiz = () => {
           <h1 className="text-3xl font-bold text-green-600 mb-4">Quiz Completed!</h1>
           <p className="text-gray-600 mb-6">Thank you for participating in the quiz</p>
           
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
-            <p className="text-sm text-gray-600 mb-2">Quiz</p>
-            <p className="font-semibold text-green-800 text-lg">{quiz?.title}</p>
-            <p className="text-sm text-gray-600 mb-2 mt-3">Participant</p>
-            <p className="font-semibold text-green-800 text-lg">{participant?.name}</p>
-          </div>
+                     <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
+             <p className="text-sm text-gray-600 mb-2">Quiz</p>
+             <p className="font-semibold text-green-800 text-lg">{quiz?.title}</p>
+           </div>
 
           <button 
             className="btn-primary w-full"
@@ -515,40 +616,101 @@ const Quiz = () => {
         </div>
       )}
 
-      {/* Question Feedback Overlay */}
-      {showFeedback && (
-        <div className="fixed inset-0 bg-blue-600 bg-opacity-95 flex items-center justify-center z-50">
-          <div className="text-center text-white">
-            {feedbackData.isCorrect ? (
-              <div className="space-y-4">
-                <div className="w-24 h-24 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto">
-                  <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-                <h2 className="text-3xl font-bold">Correct!</h2>
-                <div className="text-2xl font-bold">+{feedbackData.points} points</div>
-                <p className="opacity-90">Great job! Moving to next question...</p>
-              </div>
-            ) : (
-              <div className="space-y-4">
-                <div className="w-24 h-24 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto">
-                  <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </div>
-                <h2 className="text-3xl font-bold">Wrong!</h2>
-                <div className="text-2xl font-bold">+0 points</div>
-                <div className="space-y-2">
-                  <p className="opacity-90">Your answer: <span className="font-semibold">{feedbackData.userAnswer || 'No answer'}</span></p>
-                  <p className="opacity-90">Correct answer: <span className="font-semibold">{feedbackData.correctAnswer}</span></p>
-                </div>
-                <p className="opacity-90">Moving to next question...</p>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+             {/* Question Feedback Overlay */}
+       {showFeedback && (
+         <div className="fixed inset-0 bg-blue-600 bg-opacity-95 flex items-center justify-center z-50">
+           <div className="text-center text-white">
+             {feedbackData.isCorrect ? (
+               <div className="space-y-4">
+                 <div className="w-24 h-24 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto">
+                   <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                   </svg>
+                 </div>
+                 <h2 className="text-3xl font-bold">Correct!</h2>
+                 <div className="text-2xl font-bold">+{feedbackData.points} points</div>
+                 <p className="opacity-90">Great job! Moving to next question...</p>
+               </div>
+             ) : (
+               <div className="space-y-4">
+                 <div className="w-24 h-24 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto">
+                   <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
+                   </svg>
+                 </div>
+                 <h2 className="text-3xl font-bold">Wrong!</h2>
+                 <div className="text-2xl font-bold">+0 points</div>
+                 <div className="space-y-2">
+                   <p className="opacity-90">Your answer: <span className="font-semibold">{feedbackData.userAnswer || 'No answer'}</span></p>
+                   <p className="opacity-90">Correct answer: <span className="font-semibold">{feedbackData.correctAnswer}</span></p>
+                 </div>
+                 <p className="opacity-90">Moving to next question...</p>
+               </div>
+             )}
+           </div>
+         </div>
+       )}
+
+       {/* Final Score Overlay */}
+       {showFinalScore && (
+         <div className="fixed inset-0 bg-green-600 bg-opacity-95 flex items-center justify-center z-50">
+           <div className="text-center text-white max-w-2xl mx-auto p-8">
+             <h2 className="text-4xl font-bold mb-6">Quiz Complete!</h2>
+             
+             {/* Total Score */}
+             <div className="bg-white bg-opacity-20 rounded-lg p-6 mb-6">
+               <div className="text-6xl font-bold mb-2">{totalScore}</div>
+               <div className="text-xl opacity-90">out of {maxPossibleScore} points</div>
+               <div className="text-lg mt-2">
+                 {Math.round((totalScore / maxPossibleScore) * 100)}% Score
+               </div>
+             </div>
+             
+             {/* Question-by-Question Breakdown */}
+             <div className="bg-white bg-opacity-10 rounded-lg p-4 max-h-96 overflow-y-auto">
+               <h3 className="text-xl font-semibold mb-4">Question Breakdown</h3>
+               <div className="space-y-3">
+                 {questions.map((question, index) => {
+                   const scoreData = questionScores[question.id]
+                   return (
+                     <div key={question.id} className="flex items-center justify-between p-3 bg-white bg-opacity-10 rounded">
+                       <div className="flex-1 text-left">
+                         <div className="font-medium">Q{index + 1}: {question.question.substring(0, 50)}...</div>
+                         <div className="text-sm opacity-75">
+                           Your answer: {scoreData?.userAnswer || 'No answer'}
+                         </div>
+                       </div>
+                       <div className="flex items-center space-x-3">
+                         <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+                           scoreData?.isCorrect ? 'bg-green-500' : 'bg-red-500'
+                         }`}>
+                           {scoreData?.isCorrect ? (
+                             <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                             </svg>
+                           ) : (
+                             <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
+                             </svg>
+                           )}
+                         </div>
+                         <div className="text-right">
+                           <div className="font-bold">{scoreData?.points || 0}</div>
+                           <div className="text-xs opacity-75">pts</div>
+                         </div>
+                       </div>
+                     </div>
+                   )
+                 })}
+               </div>
+             </div>
+             
+             <div className="mt-6 text-lg opacity-90">
+               Submitting results in 5 seconds...
+             </div>
+           </div>
+         </div>
+       )}
       <div className="max-w-4xl mx-auto">
         {/* Header */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
@@ -579,68 +741,90 @@ const Quiz = () => {
           </div>
         )}
 
-        {/* Progress Bar and Timers */}
-        {quizStatus === 'playing' && (
-          <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-            <div className="flex justify-between items-center mb-4">
-              <span className="text-sm text-gray-600">Progress</span>
-              <span className="text-sm font-medium text-gray-900">
-                {Object.keys(answers).length} / {questions.length} answered
-              </span>
-            </div>
-            <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
-              <div 
-                className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                style={{ width: `${(Object.keys(answers).length / questions.length) * 100}%` }}
-              ></div>
-            </div>
-            
-            {/* Timer Display */}
-            <div className="flex justify-between items-center">
-              {totalTimeLeft !== null && (
-                <div className="flex items-center space-x-2">
-                  <span className="text-sm text-gray-600">Total Time:</span>
-                  <span className={`text-lg font-bold ${totalTimeLeft <= 60 ? 'text-red-600' : 'text-blue-600'}`}>
-                    {formatTime(totalTimeLeft)}
-                  </span>
-                </div>
-              )}
-              
-              {questionTimeLeft !== null && (
-                <div className="flex items-center space-x-2">
-                  <span className="text-sm text-gray-600">Question Time:</span>
-                  <span className={`text-lg font-bold ${questionTimeLeft <= 10 ? 'text-red-600' : 'text-green-600'}`}>
-                    {formatTime(questionTimeLeft)}
-                  </span>
-                </div>
-              )}
-            </div>
-          </div>
-        )}
+                 {/* Progress Bar and Timers */}
+         {quizStatus === 'playing' && (
+           <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+             <div className="flex justify-between items-center mb-4">
+               <span className="text-sm text-gray-600">Progress</span>
+               <span className="text-sm font-medium text-gray-900">
+                 {Object.keys(answers).length} / {questions.length} answered
+               </span>
+             </div>
+             <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
+               <div 
+                 className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                 style={{ width: `${(Object.keys(answers).length / questions.length) * 100}%` }}
+               ></div>
+             </div>
+             
+             {/* Score and Timer Display */}
+             <div className="flex justify-between items-center">
+               {/* Score Display */}
+               <div className="flex items-center space-x-2">
+                 <span className="text-sm text-gray-600">Score:</span>
+                 <span className="text-lg font-bold text-green-600">
+                   {totalScore} / {maxPossibleScore}
+                 </span>
+                 <span className="text-sm text-gray-500">
+                   ({Math.round((totalScore / maxPossibleScore) * 100)}%)
+                 </span>
+               </div>
+               
+               {/* Timer Display */}
+               <div className="flex items-center space-x-4">
+                 {totalTimeLeft !== null && (
+                   <div className="flex items-center space-x-2">
+                     <span className="text-sm text-gray-600">Total Time:</span>
+                     <span className={`text-lg font-bold ${totalTimeLeft <= 60 ? 'text-red-600' : 'text-blue-600'}`}>
+                       {formatTime(totalTimeLeft)}
+                     </span>
+                   </div>
+                 )}
+                 
+                 {questionTimeLeft !== null && (
+                   <div className="flex items-center space-x-2">
+                     <span className="text-sm text-gray-600">Question Time:</span>
+                     <span className={`text-lg font-bold ${questionTimeLeft <= 10 ? 'text-red-600' : 'text-green-600'}`}>
+                       {formatTime(questionTimeLeft)}
+                     </span>
+                   </div>
+                 )}
+               </div>
+             </div>
+           </div>
+         )}
 
-        {/* Question */}
-        {quizStatus === 'playing' && currentQuestion && (
-          <div className="bg-white rounded-lg shadow-md p-8 mb-6">
-            <div className="mb-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-semibold text-gray-900">
-                  {currentQuestion.question}
-                </h2>
-                <div className="flex items-center space-x-2">
-                  <span className={`px-2 py-1 text-xs rounded-full ${
-                    currentQuestion.difficulty === 'easy' ? 'bg-green-100 text-green-800' :
-                    currentQuestion.difficulty === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                    'bg-red-100 text-red-800'
-                  }`}>
-                    {currentQuestion.difficulty}
-                  </span>
-                  <span className="text-sm text-gray-500">{currentQuestion.points} points</span>
-                </div>
-              </div>
-              <div className="text-sm text-gray-500 mb-4">
-                Type: {currentQuestion.type.replace('_', ' ').toUpperCase()}
-              </div>
-            </div>
+                 {/* Question */}
+         {quizStatus === 'playing' && currentQuestion && (
+           <div className="bg-white rounded-lg shadow-md p-8 mb-6">
+             {/* Debug Info */}
+             <div className="mb-4 p-3 bg-gray-100 rounded text-xs">
+               <strong>Debug Info:</strong> Type: {currentQuestion.type} | 
+               Points: {currentQuestion.points} | 
+               Correct Answer: "{currentQuestion.correct_answer}" |
+               User Answer: "{answers[currentQuestion.id] || 'None'}"
+             </div>
+             
+             <div className="mb-6">
+               <div className="flex items-center justify-between mb-4">
+                 <h2 className="text-xl font-semibold text-gray-900">
+                   {currentQuestion.question}
+                 </h2>
+                 <div className="flex items-center space-x-2">
+                   <span className={`px-2 py-1 text-xs rounded-full ${
+                     currentQuestion.difficulty === 'easy' ? 'bg-green-100 text-green-800' :
+                     currentQuestion.difficulty === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                     'bg-red-100 text-red-800'
+                   }`}>
+                     {currentQuestion.difficulty}
+                   </span>
+                   <span className="text-sm text-gray-500">{currentQuestion.points} points</span>
+                 </div>
+               </div>
+               <div className="text-sm text-gray-500 mb-4">
+                 Type: {currentQuestion.type.replace('_', ' ').toUpperCase()}
+               </div>
+             </div>
 
                          {renderQuestion(currentQuestion)}
 
@@ -692,10 +876,8 @@ const Quiz = () => {
                  )}
        </div>
        
-       {/* Performance Monitor */}
-       <PerformanceMonitor isAdmin={false} />
-     </div>
-   )
- }
+                 </div>
+        )
+      }
 
 export default Quiz

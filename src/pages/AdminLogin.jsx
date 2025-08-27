@@ -3,7 +3,8 @@ import { supabase, TABLES } from '../utils/supabaseClient'
 import logo from '../assets/logo.png'
 
 const AdminLogin = () => {
-  const [accessCode, setAccessCode] = useState('')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -13,18 +14,20 @@ const AdminLogin = () => {
     setError('')
 
     try {
-      // Simple admin access code check
-      // You can change this to any code you want
-      const ADMIN_ACCESS_CODE = '1234'
+      // Simple admin credentials check
+      // You can change these to any username/password you want
+      const ADMIN_USERNAME = 'phonetic'
+      const ADMIN_PASSWORD = 'phonetic123'
       
-      if (accessCode === ADMIN_ACCESS_CODE) {
+      if (username === ADMIN_USERNAME && password === ADMIN_PASSWORD) {
         // Set admin authentication
         sessionStorage.setItem('adminAuthenticated', 'true')
+        sessionStorage.setItem('adminUsername', username)
         
         // Redirect to admin dashboard
         window.location.href = '/admin/dashboard'
       } else {
-        setError('Invalid access code. Please try again.')
+        setError('Invalid username or password. Please try again.')
       }
     } catch (error) {
       console.error('Login error:', error)
@@ -42,21 +45,36 @@ const AdminLogin = () => {
             <img src={logo} alt="Logo" className="w-full h-full object-contain" />
           </div>
           <h1 className="text-2xl font-bold text-gray-900">Admin Login</h1>
-          <p className="text-gray-600 mt-2">Enter your access code to continue</p>
+          <p className="text-gray-600 mt-2">Enter your credentials to continue</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
-            <label htmlFor="accessCode" className="block text-sm font-medium text-gray-700 mb-2">
-              Access Code
+            <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-2">
+              Username
+            </label>
+            <input
+              type="text"
+              id="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="Enter username"
+              required
+            />
+          </div>
+
+          <div>
+            <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">
+              Password
             </label>
             <input
               type="password"
-              id="accessCode"
-              value={accessCode}
-              onChange={(e) => setAccessCode(e.target.value)}
+              id="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
               className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-              placeholder="Enter access code"
+              placeholder="Enter password"
               required
             />
           </div>
@@ -79,12 +97,6 @@ const AdminLogin = () => {
             {loading ? 'Logging in...' : 'Login'}
           </button>
         </form>
-
-        <div className="mt-6 text-center">
-          <p className="text-sm text-gray-500">
-            Default access code: <span className="font-mono bg-gray-100 px-2 py-1 rounded">1234</span>
-          </p>
-        </div>
 
         <div className="mt-6 text-center">
           <a

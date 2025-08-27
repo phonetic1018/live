@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
-import { supabase, TABLES, QUIZ_STATUS, PARTICIPANT_STATUS, performanceUtils, rateLimiter, errorHandler } from '../utils/supabaseClient'
+import { supabase, TABLES, QUIZ_STATUS, PARTICIPANT_STATUS } from '../utils/supabaseClient'
 import logo from '../assets/logo.png'
-import PerformanceMonitor from '../components/PerformanceMonitor'
 
 const AdminQuiz = () => {
   const [quiz, setQuiz] = useState(null)
@@ -36,26 +35,25 @@ const AdminQuiz = () => {
     }
   }, [])
 
-  // Subscribe to participant updates with optimized subscription
+  // Subscribe to participant updates
   useEffect(() => {
     if (!quiz) return
 
-    // Rate limiting check for admin
-    const adminKey = `admin-participants-${quiz.id}`
-    if (!rateLimiter.isAllowed(adminKey, 500, 60000)) {
-      console.warn('Rate limit exceeded for admin participant subscription')
-      return
-    }
-
-    const participantsSubscription = performanceUtils.createOptimizedSubscription(
-      'admin-participants',
-      TABLES.PARTICIPANTS,
-      `quiz_id=eq.${quiz.id}`,
-      (payload) => {
-        console.log('Participant change:', payload)
-        fetchParticipants(quiz.id)
-      }
-    )
+    const participantsSubscription = supabase
+      .channel('admin-participants')
+      .on('postgres_changes', 
+        { 
+          event: '*', 
+          schema: 'public', 
+          table: TABLES.PARTICIPANTS,
+          filter: `quiz_id=eq.${quiz.id}`
+        }, 
+        (payload) => {
+          console.log('Participant change:', payload)
+          fetchParticipants(quiz.id)
+        }
+      )
+      .subscribe()
 
     return () => {
       participantsSubscription.unsubscribe()
@@ -139,41 +137,31 @@ const AdminQuiz = () => {
     try {
       console.log('Starting quiz with ID:', quiz.id)
       
-      // Try to update with current_question_index first
-      const { error: updateError } = await performanceUtils.retryOperation(async () => {
-        return await supabase
-          .from(TABLES.QUIZZES)
-          .update({ 
-            status: QUIZ_STATUS.PLAYING,
-            current_question_index: 0
-          })
-          .eq('id', quiz.id)
-      })
+      // Update quiz status to PLAYING
+      const { error: updateError } = await supabase
+        .from(TABLES.QUIZZES)
+        .update({ 
+          status: QUIZ_STATUS.PLAYING,
+          current_question_index: 0
+        })
+        .eq('id', quiz.id)
 
       if (updateError) {
-        console.warn('Failed to update with current_question_index, trying status only:', updateError)
-        
-        // Fallback: update only status
-        const { error: fallbackError } = await supabase
-          .from(TABLES.QUIZZES)
-          .update({ status: QUIZ_STATUS.PLAYING })
-          .eq('id', quiz.id)
-
-        if (fallbackError) {
-          console.error('Failed to start quiz:', fallbackError)
-          setError('Failed to start quiz')
-          return
-        }
+        console.error('Failed to start quiz:', updateError)
+        setError('Failed to start quiz')
+        return
       }
 
       // Update all participants to playing status
       if (participants.length > 0) {
-        const participantUpdates = participants.map(p => ({
-          id: p.id,
-          status: PARTICIPANT_STATUS.PLAYING
-        }))
+        const { error: participantsError } = await supabase
+          .from(TABLES.PARTICIPANTS)
+          .update({ status: PARTICIPANT_STATUS.PLAYING })
+          .eq('quiz_id', quiz.id)
 
-        await performanceUtils.batchUpdate(TABLES.PARTICIPANTS, participantUpdates)
+        if (participantsError) {
+          console.error('Error updating participants:', participantsError)
+        }
       }
 
       setQuizStatus(QUIZ_STATUS.PLAYING)
@@ -594,8 +582,6 @@ const AdminQuiz = () => {
           {error}
         </div>
       )}
-      
-      <PerformanceMonitor isAdmin={true} />
     </div>
   )
 }
