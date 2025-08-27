@@ -58,9 +58,9 @@ const Lobby = () => {
         (payload) => {
           console.log('Quiz status change:', payload)
           if (payload.new && payload.new.status === QUIZ_STATUS.PLAYING) {
-            // Quiz has started! Redirect to quiz questions
-            console.log('Quiz started! Redirecting to quiz questions...')
-            window.location.href = '/quiz'
+            // Quiz has started! Update participant start time and redirect
+            console.log('Quiz started! Updating participant start time...')
+            updateParticipantStartTime()
           }
         }
       )
@@ -92,12 +92,37 @@ const Lobby = () => {
       }
 
       if (data && data.status === QUIZ_STATUS.PLAYING) {
-        // Quiz is already playing, redirect immediately
-        console.log('Quiz is already playing! Redirecting to quiz questions...')
-        window.location.href = '/quiz'
+        // Quiz is already playing, update start time and redirect
+        console.log('Quiz is already playing! Updating participant start time...')
+        updateParticipantStartTime()
       }
     } catch (error) {
       console.error('Error in checkQuizStatus:', error)
+    }
+  }
+
+  const updateParticipantStartTime = async () => {
+    try {
+      if (participant) {
+        const { error } = await supabase
+          .from(TABLES.PARTICIPANTS)
+          .update({ 
+            started_at: new Date().toISOString(),
+            status: PARTICIPANT_STATUS.PLAYING
+          })
+          .eq('id', participant.id)
+
+        if (error) {
+          console.error('Error updating participant start time:', error)
+        }
+      }
+      
+      // Redirect to quiz questions
+      window.location.href = '/quiz'
+    } catch (error) {
+      console.error('Error in updateParticipantStartTime:', error)
+      // Still redirect even if update fails
+      window.location.href = '/quiz'
     }
   }
 

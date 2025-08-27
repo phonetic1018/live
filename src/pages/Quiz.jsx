@@ -11,6 +11,12 @@ const Quiz = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [quizCompleted, setQuizCompleted] = useState(false)
+  
+  // Timer states
+  const [totalTimeLeft, setTotalTimeLeft] = useState(null)
+  const [questionTimeLeft, setQuestionTimeLeft] = useState(null)
+  const [startTime, setStartTime] = useState(null)
+  const [questionStartTime, setQuestionStartTime] = useState(null)
 
   useEffect(() => {
     // Get quiz and participant info from session storage
@@ -31,6 +37,133 @@ const Quiz = () => {
     // Fetch quiz questions
     fetchQuestions(quizObj.id)
   }, [])
+
+  // Initialize timers when questions are loaded
+  useEffect(() => {
+    if (questions.length > 0 && quiz) {
+      initializeTimers()
+    }
+  }, [questions, quiz])
+
+  // Total quiz timer effect
+  useEffect(() => {
+    if (totalTimeLeft !== null && totalTimeLeft > 0) {
+      const timer = setInterval(() => {
+        setTotalTimeLeft(prev => {
+          if (prev <= 1) {
+            // Time's up! Auto-submit quiz
+            handleAutoSubmit()
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+
+      return () => clearInterval(timer)
+    }
+  }, [totalTimeLeft])
+
+  // Question timer effect
+  useEffect(() => {
+    if (questionTimeLeft !== null && questionTimeLeft > 0) {
+      const timer = setInterval(() => {
+        setQuestionTimeLeft(prev => {
+          if (prev <= 1) {
+            // Question time's up! Move to next question
+            handleQuestionTimeout()
+            return 0
+          }
+          return prev - 1
+        })
+      }, 1000)
+
+      return () => clearInterval(timer)
+    }
+  }, [questionTimeLeft, currentQuestionIndex])
+
+  // Listen for admin-controlled question changes
+  useEffect(() => {
+    if (!quiz) return
+
+    const quizSubscription = supabase
+      .channel('admin-quiz-control')
+      .on('postgres_changes', 
+        { 
+          event: '*', 
+          schema: 'public', 
+          table: TABLES.QUIZZES,
+          filter: `id=eq.${quiz.id}`
+        }, 
+        (payload) => {
+          console.log('Quiz change:', payload)
+          if (payload.new && payload.new.current_question_index !== undefined) {
+            const newQuestionIndex = payload.new.current_question_index
+            if (newQuestionIndex !== currentQuestionIndex) {
+              console.log(`Admin moved to question ${newQuestionIndex + 1}`)
+              setCurrentQuestionIndex(newQuestionIndex)
+              
+              // Set timer for new question if it has one
+              if (questions[newQuestionIndex] && questions[newQuestionIndex].question_timer_seconds) {
+                setQuestionTimeLeft(questions[newQuestionIndex].question_timer_seconds)
+                setQuestionStartTime(new Date())
+              } else {
+                setQuestionTimeLeft(null)
+                setQuestionStartTime(null)
+              }
+            }
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      quizSubscription.unsubscribe()
+    }
+  }, [quiz, currentQuestionIndex, questions])
+
+  const initializeTimers = () => {
+    // Set total quiz timer
+    if (quiz.total_timer_minutes) {
+      setTotalTimeLeft(quiz.total_timer_minutes * 60) // Convert to seconds
+      setStartTime(new Date())
+    }
+
+    // Set question timer for first question
+    if (questions.length > 0 && questions[0].question_timer_seconds) {
+      setQuestionTimeLeft(questions[0].question_timer_seconds)
+      setQuestionStartTime(new Date())
+    }
+  }
+
+  const handleQuestionTimeout = () => {
+    // Auto-save current answer if any
+    const currentQuestion = questions[currentQuestionIndex]
+    if (currentQuestion && answers[currentQuestion.id]) {
+      // Answer already saved, just move to next
+    }
+
+    // Move to next question or complete quiz
+    if (currentQuestionIndex < questions.length - 1) {
+      setCurrentQuestionIndex(prev => prev + 1)
+      // Set timer for next question
+      const nextQuestion = questions[currentQuestionIndex + 1]
+      if (nextQuestion && nextQuestion.question_timer_seconds) {
+        setQuestionTimeLeft(nextQuestion.question_timer_seconds)
+        setQuestionStartTime(new Date())
+      } else {
+        setQuestionTimeLeft(null)
+        setQuestionStartTime(null)
+      }
+    } else {
+      // Last question, complete quiz
+      handleSubmitQuiz()
+    }
+  }
+
+  const handleAutoSubmit = () => {
+    // Auto-submit quiz when total time expires
+    handleSubmitQuiz()
+  }
 
   const fetchQuestions = async (quizId) => {
     try {
@@ -66,25 +199,51 @@ const Quiz = () => {
   const handleNextQuestion = () => {
     if (currentQuestionIndex < questions.length - 1) {
       setCurrentQuestionIndex(prev => prev + 1)
+      
+      // Set timer for next question
+      const nextQuestion = questions[currentQuestionIndex + 1]
+      if (nextQuestion && nextQuestion.question_timer_seconds) {
+        setQuestionTimeLeft(nextQuestion.question_timer_seconds)
+        setQuestionStartTime(new Date())
+      } else {
+        setQuestionTimeLeft(null)
+        setQuestionStartTime(null)
+      }
     }
   }
 
   const handlePreviousQuestion = () => {
     if (currentQuestionIndex > 0) {
       setCurrentQuestionIndex(prev => prev - 1)
+      
+      // Set timer for previous question
+      const prevQuestion = questions[currentQuestionIndex - 1]
+      if (prevQuestion && prevQuestion.question_timer_seconds) {
+        setQuestionTimeLeft(prevQuestion.question_timer_seconds)
+        setQuestionStartTime(new Date())
+      } else {
+        setQuestionTimeLeft(null)
+        setQuestionStartTime(null)
+      }
     }
   }
 
   const handleSubmitQuiz = async () => {
     try {
-      // Save all answers to database
-      const answerEntries = Object.entries(answers).map(([questionId, answer]) => ({
-        quiz_id: quiz.id,
-        participant_id: participant.id,
-        question_id: questionId,
-        answer: answer,
-        submitted_at: new Date().toISOString()
-      }))
+      // Calculate time taken for each answer
+      const answerEntries = Object.entries(answers).map(([questionId, answer]) => {
+        const question = questions.find(q => q.id === questionId)
+        const timeTaken = questionStartTime ? Math.floor((new Date() - questionStartTime) / 1000) : null
+        
+        return {
+          quiz_id: quiz.id,
+          participant_id: participant.id,
+          question_id: questionId,
+          answer: answer,
+          submitted_at: new Date().toISOString(),
+          time_taken_seconds: timeTaken
+        }
+      })
 
       const { error } = await supabase
         .from(TABLES.ANSWERS)
@@ -99,7 +258,10 @@ const Quiz = () => {
       // Update participant status to completed
       const { error: participantError } = await supabase
         .from(TABLES.PARTICIPANTS)
-        .update({ status: PARTICIPANT_STATUS.COMPLETED })
+        .update({ 
+          status: PARTICIPANT_STATUS.COMPLETED,
+          completed_at: new Date().toISOString()
+        })
         .eq('id', participant.id)
 
       if (participantError) {
@@ -111,6 +273,13 @@ const Quiz = () => {
       console.error('Error in handleSubmitQuiz:', error)
       setError('Failed to submit quiz')
     }
+  }
+
+  const formatTime = (seconds) => {
+    if (seconds === null) return null
+    const mins = Math.floor(seconds / 60)
+    const secs = seconds % 60
+    return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
   const renderQuestion = (question) => {
@@ -268,19 +437,40 @@ const Quiz = () => {
           </div>
         </div>
 
-        {/* Progress Bar */}
+        {/* Progress Bar and Timers */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <div className="flex justify-between items-center mb-2">
+          <div className="flex justify-between items-center mb-4">
             <span className="text-sm text-gray-600">Progress</span>
             <span className="text-sm font-medium text-gray-900">
               {Object.keys(answers).length} / {questions.length} answered
             </span>
           </div>
-          <div className="w-full bg-gray-200 rounded-full h-2">
+          <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
             <div 
               className="bg-blue-600 h-2 rounded-full transition-all duration-300"
               style={{ width: `${(Object.keys(answers).length / questions.length) * 100}%` }}
             ></div>
+          </div>
+          
+          {/* Timer Display */}
+          <div className="flex justify-between items-center">
+            {totalTimeLeft !== null && (
+              <div className="flex items-center space-x-2">
+                <span className="text-sm text-gray-600">Total Time:</span>
+                <span className={`text-lg font-bold ${totalTimeLeft <= 60 ? 'text-red-600' : 'text-blue-600'}`}>
+                  {formatTime(totalTimeLeft)}
+                </span>
+              </div>
+            )}
+            
+            {questionTimeLeft !== null && (
+              <div className="flex items-center space-x-2">
+                <span className="text-sm text-gray-600">Question Time:</span>
+                <span className={`text-lg font-bold ${questionTimeLeft <= 10 ? 'text-red-600' : 'text-green-600'}`}>
+                  {formatTime(questionTimeLeft)}
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
@@ -304,47 +494,24 @@ const Quiz = () => {
           )}
         </div>
 
-        {/* Navigation */}
+        {/* Admin Controlled Navigation */}
         <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="flex justify-between items-center">
-            <button
-              onClick={handlePreviousQuestion}
-              disabled={isFirstQuestion}
-              className={`px-4 py-2 rounded-lg font-medium ${
-                isFirstQuestion 
-                  ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
-                  : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-              }`}
-            >
-              Previous
-            </button>
-
-            <div className="flex space-x-2">
-              {!isLastQuestion ? (
-                <button
-                  onClick={handleNextQuestion}
-                  disabled={!hasAnsweredCurrent}
-                  className={`px-6 py-2 rounded-lg font-medium ${
-                    !hasAnsweredCurrent
-                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                      : 'bg-blue-600 text-white hover:bg-blue-700'
-                  }`}
-                >
-                  Next
-                </button>
-              ) : (
-                <button
-                  onClick={handleSubmitQuiz}
-                  disabled={Object.keys(answers).length < questions.length}
-                  className={`px-6 py-2 rounded-lg font-medium ${
-                    Object.keys(answers).length < questions.length
-                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                      : 'bg-green-600 text-white hover:bg-green-700'
-                  }`}
-                >
-                  Submit Quiz
-                </button>
-              )}
+          <div className="text-center">
+            <p className="text-gray-600 mb-4">
+              The admin controls when to move to the next question.
+            </p>
+            <div className="flex justify-center space-x-4">
+              <button
+                onClick={handleSubmitQuiz}
+                disabled={Object.keys(answers).length < questions.length}
+                className={`px-6 py-2 rounded-lg font-medium ${
+                  Object.keys(answers).length < questions.length
+                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                    : 'bg-green-600 text-white hover:bg-green-700'
+                }`}
+              >
+                Submit Quiz
+              </button>
             </div>
           </div>
         </div>

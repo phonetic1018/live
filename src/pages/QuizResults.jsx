@@ -78,6 +78,7 @@ const QuizResults = () => {
           )
         `)
         .eq('quiz_id', quizId)
+        .order('completed_at', { ascending: false })
 
       if (participantsError) {
         console.error('Error fetching participants:', participantsError)
@@ -104,15 +105,30 @@ const QuizResults = () => {
         const correctAnswers = participantAnswers.filter(answer => answer.is_correct).length
         const totalQuestions = questions.length
         const score = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0
+        
+        // Calculate time used
+        let timeUsed = null
+        if (participant.started_at && participant.completed_at) {
+          const startTime = new Date(participant.started_at)
+          const endTime = new Date(participant.completed_at)
+          timeUsed = Math.floor((endTime - startTime) / 1000) // in seconds
+        }
 
         return {
           ...participant,
           score,
           correctAnswers,
           totalQuestions,
+          timeUsed,
           answers: participantAnswers
         }
       }).sort((a, b) => b.score - a.score) // Sort by score descending
+
+      // Calculate average time
+      const participantsWithTime = results.filter(p => p.timeUsed !== null)
+      const averageTime = participantsWithTime.length > 0 
+        ? Math.round(participantsWithTime.reduce((sum, p) => sum + p.timeUsed, 0) / participantsWithTime.length)
+        : null
 
       setQuizResults({
         quiz,
@@ -121,7 +137,8 @@ const QuizResults = () => {
         totalParticipants: results.length,
         averageScore: results.length > 0 ? Math.round(results.reduce((sum, p) => sum + p.score, 0) / results.length) : 0,
         highestScore: results.length > 0 ? Math.max(...results.map(p => p.score)) : 0,
-        lowestScore: results.length > 0 ? Math.min(...results.map(p => p.score)) : 0
+        lowestScore: results.length > 0 ? Math.min(...results.map(p => p.score)) : 0,
+        averageTime
       })
 
     } catch (error) {
@@ -236,7 +253,7 @@ const QuizResults = () => {
                 <h2 className="text-xl font-semibold text-gray-900 mb-4">
                   {selectedQuiz.title} - Results Summary
                 </h2>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   <div className="text-center">
                     <div className="text-2xl font-bold text-blue-600">{quizResults.totalParticipants}</div>
                     <div className="text-sm text-gray-600">Total Participants</div>
@@ -254,6 +271,24 @@ const QuizResults = () => {
                     <div className="text-sm text-gray-600">Lowest Score</div>
                   </div>
                 </div>
+                
+                {/* Timer Information */}
+                {selectedQuiz.total_timer_minutes && (
+                  <div className="mt-4 pt-4 border-t border-blue-200">
+                    <div className="flex items-center justify-center space-x-4">
+                      <div className="text-center">
+                        <div className="text-lg font-bold text-blue-600">{selectedQuiz.total_timer_minutes} min</div>
+                        <div className="text-sm text-gray-600">Total Time Limit</div>
+                      </div>
+                      {quizResults.averageTime && (
+                        <div className="text-center">
+                          <div className="text-lg font-bold text-green-600">{Math.round(quizResults.averageTime / 60)} min</div>
+                          <div className="text-sm text-gray-600">Average Time Used</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Participant Results */}
@@ -282,6 +317,11 @@ const QuizResults = () => {
                               <p className="text-sm text-gray-600">
                                 {participant.correctAnswers} / {participant.totalQuestions} correct
                               </p>
+                              {participant.timeUsed && (
+                                <p className="text-xs text-gray-500">
+                                  Time: {Math.round(participant.timeUsed / 60)} min {participant.timeUsed % 60} sec
+                                </p>
+                              )}
                             </div>
                           </div>
                           <div className="text-right">

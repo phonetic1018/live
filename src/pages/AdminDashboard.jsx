@@ -96,7 +96,10 @@ const AdminDashboard = () => {
       // Update quiz status to PLAYING
       const { error: quizError } = await supabase
         .from(TABLES.QUIZZES)
-        .update({ status: QUIZ_STATUS.PLAYING })
+        .update({ 
+          status: QUIZ_STATUS.PLAYING,
+          current_question_index: 0
+        })
         .eq('id', quizId)
 
       if (quizError) {
@@ -116,10 +119,19 @@ const AdminDashboard = () => {
         // Don't return here as the quiz was already started
       }
 
+      // Store quiz data in session storage for admin quiz
+      const quiz = dashboardData.quizzes.find(q => q.id === quizId)
+      if (quiz) {
+        sessionStorage.setItem('currentQuiz', JSON.stringify(quiz))
+      }
+
       // Refresh dashboard data
       await fetchDashboardData()
       
-      alert('Quiz started successfully! All participants can now begin the quiz.')
+      alert('Quiz started successfully! Redirecting to admin control panel...')
+      
+      // Redirect to admin quiz control panel
+      window.location.href = '/admin/quiz'
       
     } catch (error) {
       console.error('Error starting quiz:', error)

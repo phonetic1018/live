@@ -7,14 +7,16 @@ const CreateQuiz = () => {
   const [loading, setLoading] = useState(false)
   const [quizData, setQuizData] = useState({
     title: '',
-    accessCode: ''
+    accessCode: '',
+    totalTimerMinutes: null
   })
   const [questions, setQuestions] = useState([
     {
       text: '',
       type: QUESTION_TYPES.MCQ,
       options: ['', '', '', ''],
-      correctAnswer: ''
+      correctAnswer: '',
+      questionTimerSeconds: null
     }
   ])
   const [error, setError] = useState('')
@@ -44,7 +46,8 @@ const CreateQuiz = () => {
         text: '',
         type: QUESTION_TYPES.MCQ,
         options: ['', '', '', ''],
-        correctAnswer: ''
+        correctAnswer: '',
+        questionTimerSeconds: null
       }
     ])
   }
@@ -100,7 +103,8 @@ const CreateQuiz = () => {
           {
             title: quizData.title.trim(),
             access_code: quizData.accessCode.trim().toUpperCase(),
-            status: QUIZ_STATUS.WAITING
+            status: QUIZ_STATUS.WAITING,
+            total_timer_minutes: quizData.totalTimerMinutes || null
           }
         ])
         .select()
@@ -114,12 +118,14 @@ const CreateQuiz = () => {
       }
 
       // Create questions
-      const questionsToInsert = questions.map(q => ({
+      const questionsToInsert = questions.map((q, index) => ({
         quiz_id: quiz.id,
-        text: q.text.trim(),
+        question: q.text.trim(),
         type: q.type,
-        options: q.type === QUESTION_TYPES.MCQ ? q.options : [],
-        correct_answer: q.correctAnswer.trim()
+        options: q.type === QUESTION_TYPES.MCQ ? q.options : null,
+        correct_answer: q.correctAnswer.trim(),
+        order_index: index,
+        question_timer_seconds: q.questionTimerSeconds || null
       }))
 
       const { error: questionsError } = await supabase
@@ -136,12 +142,13 @@ const CreateQuiz = () => {
       setSuccess('Quiz created successfully!')
       
       // Clear form
-      setQuizData({ title: '', accessCode: '' })
+      setQuizData({ title: '', accessCode: '', totalTimerMinutes: null })
       setQuestions([{
         text: '',
         type: QUESTION_TYPES.MCQ,
         options: ['', '', '', ''],
-        correctAnswer: ''
+        correctAnswer: '',
+        questionTimerSeconds: null
       }])
 
       // Clear session storage
@@ -186,7 +193,7 @@ const CreateQuiz = () => {
             {/* Quiz Details */}
             <div className="bg-blue-50 border border-blue-200 rounded-lg p-6">
               <h2 className="text-xl font-semibold text-gray-900 mb-4">Quiz Details</h2>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Quiz Title
@@ -213,6 +220,21 @@ const CreateQuiz = () => {
                     maxLength={8}
                     required
                   />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Total Timer (minutes)
+                  </label>
+                  <input
+                    type="number"
+                    value={quizData.totalTimerMinutes || ''}
+                    onChange={(e) => setQuizData({ ...quizData, totalTimerMinutes: e.target.value ? parseInt(e.target.value) : null })}
+                    placeholder="Optional - Leave empty for no limit"
+                    className="input-field"
+                    min="1"
+                    max="180"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Leave empty for no time limit</p>
                 </div>
               </div>
             </div>
@@ -296,18 +318,35 @@ const CreateQuiz = () => {
                       </div>
                     )}
 
-                    <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-2">
-                        Correct Answer
-                      </label>
-                      <input
-                        type="text"
-                        value={question.correctAnswer}
-                        onChange={(e) => updateQuestion(index, 'correctAnswer', e.target.value)}
-                        placeholder="Enter correct answer"
-                        className="input-field"
-                        required
-                      />
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Correct Answer
+                        </label>
+                        <input
+                          type="text"
+                          value={question.correctAnswer}
+                          onChange={(e) => updateQuestion(index, 'correctAnswer', e.target.value)}
+                          placeholder="Enter correct answer"
+                          className="input-field"
+                          required
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Question Timer (seconds)
+                        </label>
+                        <input
+                          type="number"
+                          value={question.questionTimerSeconds || ''}
+                          onChange={(e) => updateQuestion(index, 'questionTimerSeconds', e.target.value ? parseInt(e.target.value) : null)}
+                          placeholder="Optional - Leave empty for no limit"
+                          className="input-field"
+                          min="5"
+                          max="300"
+                        />
+                        <p className="text-xs text-gray-500 mt-1">Leave empty for no time limit</p>
+                      </div>
                     </div>
                   </div>
                 </div>

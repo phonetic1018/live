@@ -10,6 +10,7 @@ import AdminDashboard from './pages/AdminDashboard'
 import CreateQuiz from './pages/CreateQuiz'
 import ManageQuiz from './pages/ManageQuiz'
 import QuizResults from './pages/QuizResults'
+import AdminQuiz from './pages/AdminQuiz'
 import SupabaseTest from './components/SupabaseTest'
 import TestPage from './pages/TestPage'
 import EnvTest from './components/EnvTest'
@@ -75,6 +76,7 @@ function App() {
           <Route path="/admin/create-quiz" element={<CreateQuiz />} />
           <Route path="/admin/manage-quiz" element={<ManageQuiz />} />
           <Route path="/admin/quiz-results" element={<QuizResults />} />
+          <Route path="/admin/quiz" element={<AdminQuiz />} />
           
           {/* Test Routes */}
           <Route path="/test" element={<SupabaseTest />} />
