@@ -135,26 +135,70 @@ const AdminQuiz = () => {
 
   const startQuiz = async () => {
     try {
-      const { error } = await supabase
+      console.log('Starting quiz with ID:', quiz.id)
+      console.log('Current quiz status:', quiz.status)
+      
+      // First, let's check if the quiz exists and get its current state
+      const { data: currentQuiz, error: fetchError } = await supabase
         .from(TABLES.QUIZZES)
-        .update({ 
-          status: QUIZ_STATUS.PLAYING,
-          current_question_index: 0
-        })
+        .select('*')
         .eq('id', quiz.id)
+        .single()
 
-      if (error) {
-        console.error('Error starting quiz:', error)
-        setError('Failed to start quiz')
+      if (fetchError) {
+        console.error('Error fetching current quiz:', fetchError)
+        setError(`Failed to fetch quiz: ${fetchError.message}`)
         return
       }
 
+      console.log('Current quiz data:', currentQuiz)
+
+      // Try to update with all new columns first
+      let updateData, error
+      
+      try {
+        const result = await supabase
+          .from(TABLES.QUIZZES)
+          .update({ 
+            status: QUIZ_STATUS.PLAYING,
+            current_question_index: 0
+          })
+          .eq('id', quiz.id)
+          .select()
+        
+        updateData = result.data
+        error = result.error
+      } catch (columnError) {
+        console.log('Column current_question_index might not exist, trying without it...')
+        
+        // Fallback: try updating only the status
+        const result = await supabase
+          .from(TABLES.QUIZZES)
+          .update({ 
+            status: QUIZ_STATUS.PLAYING
+          })
+          .eq('id', quiz.id)
+          .select()
+        
+        updateData = result.data
+        error = result.error
+      }
+
+      if (error) {
+        console.error('Error starting quiz:', error)
+        console.error('Error details:', error.details)
+        console.error('Error hint:', error.hint)
+        setError(`Failed to start quiz: ${error.message}`)
+        return
+      }
+
+      console.log('Quiz updated successfully:', updateData)
       setQuizStatus(QUIZ_STATUS.PLAYING)
       setCurrentQuestionIndex(0)
       setError('')
     } catch (error) {
       console.error('Error in startQuiz:', error)
-      setError('Failed to start quiz')
+      setError(`Failed to start quiz: ${error.message}`)
     }
   }
 
