@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react'
-import { supabase, TABLES, QUIZ_STATUS, PARTICIPANT_STATUS } from '../utils/supabaseClient'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import { supabase, TABLES, QUIZ_STATUS, PARTICIPANT_STATUS, performanceUtils, rateLimiter, errorHandler } from '../utils/supabaseClient'
 import logo from '../assets/logo.png'
+import PerformanceMonitor from '../components/PerformanceMonitor'
 
 const AdminQuiz = () => {
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [quiz, setQuiz] = useState(null)
   const [questions, setQuestions] = useState([])
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0)
@@ -20,7 +20,6 @@ const AdminQuiz = () => {
     const adminAuth = sessionStorage.getItem('adminAuthenticated')
     
     if (adminAuth === 'true') {
-      setIsAuthenticated(true)
       // Get current quiz from session storage
       const quizData = sessionStorage.getItem('currentQuiz')
       if (quizData) {
@@ -37,25 +36,26 @@ const AdminQuiz = () => {
     }
   }, [])
 
-  // Subscribe to participant updates
+  // Subscribe to participant updates with optimized subscription
   useEffect(() => {
     if (!quiz) return
 
-    const participantsSubscription = supabase
-      .channel('admin-participants')
-      .on('postgres_changes', 
-        { 
-          event: '*', 
-          schema: 'public', 
-          table: TABLES.PARTICIPANTS,
-          filter: `quiz_id=eq.${quiz.id}`
-        }, 
-        (payload) => {
-          console.log('Participant change:', payload)
-          fetchParticipants(quiz.id)
-        }
-      )
-      .subscribe()
+    // Rate limiting check for admin
+    const adminKey = `admin-participants-${quiz.id}`
+    if (!rateLimiter.isAllowed(adminKey, 500, 60000)) {
+      console.warn('Rate limit exceeded for admin participant subscription')
+      return
+    }
+
+    const participantsSubscription = performanceUtils.createOptimizedSubscription(
+      'admin-participants',
+      TABLES.PARTICIPANTS,
+      `quiz_id=eq.${quiz.id}`,
+      (payload) => {
+        console.log('Participant change:', payload)
+        fetchParticipants(quiz.id)
+      }
+    )
 
     return () => {
       participantsSubscription.unsubscribe()
@@ -97,18 +97,18 @@ const AdminQuiz = () => {
         .from(TABLES.QUESTIONS)
         .select('*')
         .eq('quiz_id', quizId)
-        .order('order_index', { ascending: true })
+        .order('created_at', { ascending: true })
 
       if (error) {
         console.error('Error fetching questions:', error)
-        setError('Failed to load quiz questions')
+        setError('Failed to fetch questions')
         return
       }
 
       setQuestions(data || [])
     } catch (error) {
-      console.error('Error in fetchQuestions:', error)
-      setError('Failed to load quiz questions')
+      console.error('Error fetching questions:', error)
+      setError('Failed to fetch questions')
     } finally {
       setLoading(false)
     }
@@ -129,63 +129,65 @@ const AdminQuiz = () => {
 
       setParticipants(data || [])
     } catch (error) {
-      console.error('Error in fetchParticipants:', error)
+      console.error('Error fetching participants:', error)
     }
   }
 
-  const startQuiz = async () => {
+  const startQuiz = useCallback(async () => {
+    if (!quiz) return
+
     try {
       console.log('Starting quiz with ID:', quiz.id)
-      setError('')
       
-      // Simple approach: just update the status first
-      const { error: statusError } = await supabase
-        .from(TABLES.QUIZZES)
-        .update({ status: QUIZ_STATUS.PLAYING })
-        .eq('id', quiz.id)
-
-      if (statusError) {
-        console.error('Error updating quiz status:', statusError)
-        setError(`Failed to start quiz: ${statusError.message}`)
-        return
-      }
-
-      // Try to update current_question_index if the column exists
-      try {
-        const { error: questionError } = await supabase
+      // Try to update with current_question_index first
+      const { error: updateError } = await performanceUtils.retryOperation(async () => {
+        return await supabase
           .from(TABLES.QUIZZES)
-          .update({ current_question_index: 0 })
+          .update({ 
+            status: QUIZ_STATUS.PLAYING,
+            current_question_index: 0
+          })
+          .eq('id', quiz.id)
+      })
+
+      if (updateError) {
+        console.warn('Failed to update with current_question_index, trying status only:', updateError)
+        
+        // Fallback: update only status
+        const { error: fallbackError } = await supabase
+          .from(TABLES.QUIZZES)
+          .update({ status: QUIZ_STATUS.PLAYING })
           .eq('id', quiz.id)
 
-        if (questionError) {
-          console.log('current_question_index column might not exist, continuing...')
+        if (fallbackError) {
+          console.error('Failed to start quiz:', fallbackError)
+          setError('Failed to start quiz')
+          return
         }
-      } catch (e) {
-        console.log('current_question_index update failed, continuing...')
       }
 
-      // Update participants to playing status
-      try {
-        await supabase
-          .from(TABLES.PARTICIPANTS)
-          .update({ status: PARTICIPANT_STATUS.PLAYING })
-          .eq('quiz_id', quiz.id)
-          .eq('status', PARTICIPANT_STATUS.WAITING)
-      } catch (e) {
-        console.log('Participant status update failed, continuing...')
+      // Update all participants to playing status
+      if (participants.length > 0) {
+        const participantUpdates = participants.map(p => ({
+          id: p.id,
+          status: PARTICIPANT_STATUS.PLAYING
+        }))
+
+        await performanceUtils.batchUpdate(TABLES.PARTICIPANTS, participantUpdates)
       }
 
-      console.log('Quiz started successfully')
       setQuizStatus(QUIZ_STATUS.PLAYING)
       setCurrentQuestionIndex(0)
-      
+      console.log('Quiz started successfully')
     } catch (error) {
-      console.error('Error in startQuiz:', error)
-      setError(`Failed to start quiz: ${error.message}`)
+      console.error('Error starting quiz:', error)
+      setError('Failed to start quiz')
     }
-  }
+  }, [quiz, participants])
 
   const pauseQuiz = async () => {
+    if (!quiz) return
+
     try {
       const { error } = await supabase
         .from(TABLES.QUIZZES)
@@ -199,14 +201,15 @@ const AdminQuiz = () => {
       }
 
       setQuizStatus(QUIZ_STATUS.WAITING)
-      setError('')
     } catch (error) {
-      console.error('Error in pauseQuiz:', error)
+      console.error('Error pausing quiz:', error)
       setError('Failed to pause quiz')
     }
   }
 
   const stopQuiz = async () => {
+    if (!quiz) return
+
     try {
       const { error } = await supabase
         .from(TABLES.QUIZZES)
@@ -220,350 +223,379 @@ const AdminQuiz = () => {
       }
 
       setQuizStatus(QUIZ_STATUS.COMPLETED)
-      setError('')
-      
-      // Redirect to results page
-      window.location.href = '/admin/results'
     } catch (error) {
-      console.error('Error in stopQuiz:', error)
+      console.error('Error stopping quiz:', error)
       setError('Failed to stop quiz')
     }
   }
 
   const handleNextQuestion = async () => {
-    if (currentQuestionIndex >= questions.length - 1) {
-      // Last question, complete quiz
-      await stopQuiz()
-      return
-    }
-
-    setShowNextTimer(true)
-    setNextTimer(3)
-
-    const countdown = setInterval(() => {
-      setNextTimer(prev => {
-        if (prev <= 1) {
-          clearInterval(countdown)
-          setShowNextTimer(false)
-          updateQuizQuestion(currentQuestionIndex + 1)
-          return 3
-        }
-        return prev - 1
-      })
-    }, 1000)
-  }
-
-  const updateQuizQuestion = async (questionIndex) => {
-    try {
-      // Try to update current_question_index if the column exists
-      try {
-        const { error } = await supabase
-          .from(TABLES.QUIZZES)
-          .update({ current_question_index: questionIndex })
-          .eq('id', quiz.id)
-
-        if (error) {
-          console.log('current_question_index update failed, continuing...')
-        }
-      } catch (e) {
-        console.log('current_question_index column might not exist, continuing...')
-      }
-
-      setCurrentQuestionIndex(questionIndex)
-      setError('')
-    } catch (error) {
-      console.error('Error in updateQuizQuestion:', error)
-      setError('Failed to move to next question')
+    if (currentQuestionIndex < questions.length - 1) {
+      setShowNextTimer(true)
+      setNextTimer(3)
+      
+      const timer = setInterval(() => {
+        setNextTimer(prev => {
+          if (prev <= 1) {
+            clearInterval(timer)
+            setShowNextTimer(false)
+            setCurrentQuestionIndex(prev => prev + 1)
+            
+            // Update quiz with new question index
+            supabase
+              .from(TABLES.QUIZZES)
+              .update({ current_question_index: currentQuestionIndex + 1 })
+              .eq('id', quiz.id)
+              .then(({ error }) => {
+                if (error) console.error('Error updating question index:', error)
+              })
+            
+            return 3
+          }
+          return prev - 1
+        })
+      }, 1000)
     }
   }
 
-  const handlePreviousQuestion = () => {
+  const handlePreviousQuestion = async () => {
     if (currentQuestionIndex > 0) {
-      updateQuizQuestion(currentQuestionIndex - 1)
+      setShowNextTimer(true)
+      setNextTimer(3)
+      
+      const timer = setInterval(() => {
+        setNextTimer(prev => {
+          if (prev <= 1) {
+            clearInterval(timer)
+            setShowNextTimer(false)
+            setCurrentQuestionIndex(prev => prev - 1)
+            
+            // Update quiz with new question index
+            supabase
+              .from(TABLES.QUIZZES)
+              .update({ current_question_index: currentQuestionIndex - 1 })
+              .eq('id', quiz.id)
+              .then(({ error }) => {
+                if (error) console.error('Error updating question index:', error)
+              })
+            
+            return 3
+          }
+          return prev - 1
+        })
+      }, 1000)
     }
   }
 
-  const renderQuestion = (question) => {
-    if (!question) return null
+  const handleShowResults = async () => {
+    // Show results for 5 seconds then move to next question
+    setTimeout(() => {
+      if (currentQuestionIndex < questions.length - 1) {
+        handleNextQuestion()
+      }
+    }, 5000)
+  }
+
+  const renderQuestion = () => {
+    if (!questions.length || currentQuestionIndex >= questions.length) {
+      return (
+        <div className="text-center py-8">
+          <h3 className="text-xl font-semibold text-gray-700 mb-4">No questions available</h3>
+          <p className="text-gray-500">Please add questions to this quiz.</p>
+        </div>
+      )
+    }
+
+    const question = questions[currentQuestionIndex]
 
     return (
       <div className="bg-white rounded-lg shadow-md p-6">
-        <div className="mb-4">
-          <div className="flex items-center justify-between mb-2">
+        <div className="flex justify-between items-start mb-4">
+          <div>
             <span className="text-sm text-gray-500">Question {currentQuestionIndex + 1} of {questions.length}</span>
-            <div className="flex items-center space-x-2">
-              {question.difficulty && (
-                <span className={`px-2 py-1 rounded-full text-xs ${
-                  question.difficulty === 'easy' ? 'bg-green-100 text-green-800' :
-                  question.difficulty === 'medium' ? 'bg-yellow-100 text-yellow-800' :
-                  'bg-red-100 text-red-800'
-                }`}>
-                  {question.difficulty}
-                </span>
-              )}
-              {question.points && (
-                <span className="text-sm text-gray-500">{question.points} points</span>
-              )}
-            </div>
+            <h3 className="text-xl font-semibold text-gray-900 mt-1">{question.question}</h3>
           </div>
-          <h2 className="text-xl font-semibold text-gray-900 mb-4">
-            {question.question || question.text}
-          </h2>
-          <div className="text-sm text-gray-500 mb-4">
-            Type: {question.type.replace('_', ' ').toUpperCase()}
+          <div className="text-right">
+            <span className="inline-block bg-blue-100 text-blue-800 text-xs px-2 py-1 rounded-full mb-1">
+              {question.difficulty || 'medium'}
+            </span>
+            <div className="text-sm text-gray-500">
+              Points: {question.points || 1}
+            </div>
           </div>
         </div>
 
-        {question.type === 'mcq' && question.options && (
-          <div className="space-y-3">
-            <h3 className="font-medium text-gray-900 mb-3">Options:</h3>
-            {question.options.map((option, index) => (
-              <div key={index} className="flex items-center space-x-3 p-3 bg-gray-50 rounded-lg">
-                <span className="text-sm font-medium text-gray-500">{String.fromCharCode(65 + index)}.</span>
-                <span className="text-gray-700">{option}</span>
-                {option === question.correct_answer && (
-                  <span className="ml-auto text-green-600 font-medium">✓ Correct</span>
-                )}
+        <div className="space-y-3 mb-6">
+          {question.type === 'mcq' && question.options && (
+            <div>
+              <p className="text-sm font-medium text-gray-700 mb-2">Options:</p>
+              <div className="space-y-2">
+                {question.options.map((option, index) => (
+                  <div key={index} className="flex items-center p-3 border rounded-lg">
+                    <span className="text-sm text-gray-600 mr-3">{String.fromCharCode(65 + index)}.</span>
+                    <span className="text-gray-900">{option}</span>
+                    {option === question.correct_answer && (
+                      <span className="ml-auto text-green-600 text-sm font-medium">✓ Correct</span>
+                    )}
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        )}
+            </div>
+          )}
 
-        <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
-          <h3 className="font-medium text-green-900 mb-2">Correct Answer:</h3>
-          <p className="text-green-800">{question.correct_answer}</p>
-          {question.explanation && (
-            <div className="mt-3 pt-3 border-t border-green-200">
-              <h4 className="font-medium text-green-900 mb-1">Explanation:</h4>
-              <p className="text-green-700 text-sm">{question.explanation}</p>
+          {question.type === 'true_false' && (
+            <div>
+              <p className="text-sm font-medium text-gray-700 mb-2">Correct Answer:</p>
+              <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                <span className="text-green-800 font-medium">{question.correct_answer}</span>
+              </div>
+            </div>
+          )}
+
+          {question.type === 'short_answer' && (
+            <div>
+              <p className="text-sm font-medium text-gray-700 mb-2">Correct Answer:</p>
+              <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
+                <span className="text-green-800 font-medium">{question.correct_answer}</span>
+              </div>
             </div>
           )}
         </div>
-      </div>
-    )
-  }
 
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'waiting': return 'bg-yellow-100 text-yellow-800'
-      case 'playing': return 'bg-green-100 text-green-800'
-      case 'completed': return 'bg-blue-100 text-blue-800'
-      default: return 'bg-gray-100 text-gray-800'
-    }
-  }
-
-  const getParticipantStatusColor = (status) => {
-    switch (status) {
-      case 'waiting': return 'bg-yellow-100 text-yellow-800'
-      case 'playing': return 'bg-green-100 text-green-800'
-      case 'completed': return 'bg-blue-100 text-blue-800'
-      default: return 'bg-gray-100 text-gray-800'
-    }
-  }
-
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-        <div className="bg-white rounded-lg shadow-md p-8 max-w-md w-full text-center">
-          <p className="text-gray-600">Loading...</p>
-        </div>
+        {question.explanation && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-4">
+            <p className="text-sm font-medium text-blue-800 mb-1">Explanation:</p>
+            <p className="text-blue-700 text-sm">{question.explanation}</p>
+          </div>
+        )}
       </div>
     )
   }
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-        <div className="bg-white rounded-lg shadow-md p-8 max-w-md w-full text-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
           <p className="text-gray-600">Loading quiz...</p>
         </div>
       </div>
     )
   }
 
-  const currentQuestion = questions[currentQuestionIndex]
-  const waitingParticipants = participants.filter(p => p.status === 'waiting').length
-  const playingParticipants = participants.filter(p => p.status === 'playing').length
-  const completedParticipants = participants.filter(p => p.status === 'completed').length
+  if (!quiz) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+        <div className="text-center">
+          <p className="text-gray-600 mb-4">No quiz selected</p>
+          <button
+            onClick={() => window.location.href = '/admin/dashboard'}
+            className="btn-primary"
+          >
+            Back to Dashboard
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+      {/* Header */}
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <div className="w-16 h-16 flex items-center justify-center">
-                <img src={logo} alt="Logo" className="w-full h-full object-contain" />
-              </div>
-              <div>
-                <h1 className="text-2xl font-bold text-gray-900">{quiz?.title}</h1>
-                <p className="text-gray-600">Admin Control Panel</p>
-              </div>
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">{quiz.title}</h1>
+              <p className="text-gray-600">Access Code: {quiz.access_code}</p>
             </div>
             <div className="flex items-center space-x-4">
-              <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(quizStatus)}`}>
-                {quizStatus.toUpperCase()}
-              </span>
+              <div className="text-right">
+                <div className="text-sm text-gray-500">Status</div>
+                <div className={`font-semibold ${
+                  quizStatus === 'waiting' ? 'text-yellow-600' :
+                  quizStatus === 'playing' ? 'text-green-600' :
+                  'text-red-600'
+                }`}>
+                  {quizStatus.charAt(0).toUpperCase() + quizStatus.slice(1)}
+                </div>
+              </div>
               <button
-                onClick={() => setShowParticipantList(!showParticipantList)}
-                className="text-blue-600 hover:text-blue-700"
+                onClick={() => window.location.href = '/admin/dashboard'}
+                className="btn-outline"
               >
-                {showParticipantList ? 'Hide' : 'Show'} Participants
+                Back to Dashboard
               </button>
             </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           {/* Main Content */}
-          <div className="lg:col-span-2 space-y-6">
+          <div className="lg:col-span-3">
             {/* Quiz Controls */}
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Quiz Controls</h2>
-              <div className="flex flex-wrap gap-3">
+            <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+              <div className="flex flex-wrap gap-4 justify-center">
                 {quizStatus === 'waiting' && (
                   <button
                     onClick={startQuiz}
-                    className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-medium"
+                    className="btn-primary"
                   >
-                    ▶️ Start Quiz
+                    Start Quiz
                   </button>
                 )}
+                
                 {quizStatus === 'playing' && (
                   <>
                     <button
                       onClick={pauseQuiz}
-                      className="bg-yellow-600 hover:bg-yellow-700 text-white px-6 py-3 rounded-lg font-medium"
+                      className="btn-secondary"
                     >
-                      ⏸️ Pause Quiz
+                      Pause Quiz
                     </button>
                     <button
                       onClick={stopQuiz}
-                      className="bg-red-600 hover:bg-red-700 text-white px-6 py-3 rounded-lg font-medium"
+                      className="btn-danger"
                     >
-                      ⏹️ End Quiz
+                      End Quiz
                     </button>
                   </>
                 )}
-                {quizStatus === 'paused' && (
+
+                {quizStatus === 'completed' && (
                   <button
-                    onClick={startQuiz}
-                    className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-medium"
+                    onClick={() => window.location.href = '/admin/quiz-results'}
+                    className="btn-primary"
                   >
-                    ▶️ Resume Quiz
+                    View Results
                   </button>
                 )}
               </div>
             </div>
 
             {/* Current Question */}
-            {currentQuestion && (
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">Current Question</h2>
-                {renderQuestion(currentQuestion)}
+            {quizStatus === 'playing' && (
+              <div className="mb-6">
+                {renderQuestion()}
               </div>
             )}
 
             {/* Question Navigation */}
-            {quizStatus === 'playing' && (
+            {quizStatus === 'playing' && questions.length > 0 && (
               <div className="bg-white rounded-lg shadow-md p-6">
-                <h2 className="text-lg font-semibold text-gray-900 mb-4">Question Navigation</h2>
-                <div className="flex items-center justify-between">
+                <div className="flex justify-between items-center">
                   <button
                     onClick={handlePreviousQuestion}
                     disabled={currentQuestionIndex === 0}
-                    className={`px-6 py-3 rounded-lg font-medium ${
-                      currentQuestionIndex === 0
-                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                        : 'bg-blue-600 text-white hover:bg-blue-700'
-                    }`}
+                    className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    ← Previous Question
+                    Previous Question
                   </button>
                   
                   <div className="text-center">
-                    <div className="text-sm text-gray-600">Question Progress</div>
-                    <div className="text-lg font-semibold text-gray-900">
-                      {currentQuestionIndex + 1} / {questions.length}
+                    <div className="text-sm text-gray-500">Question Navigation</div>
+                    <div className="font-semibold">
+                      {currentQuestionIndex + 1} of {questions.length}
                     </div>
                   </div>
-
+                  
                   <button
                     onClick={handleNextQuestion}
-                    className="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-medium"
+                    disabled={currentQuestionIndex === questions.length - 1}
+                    className="btn-secondary disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    {currentQuestionIndex >= questions.length - 1 ? 'Complete Quiz' : 'Next Question →'}
+                    Next Question
                   </button>
                 </div>
               </div>
             )}
 
-            {/* Next Question Timer */}
-            {showNextTimer && (
-              <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
-                <div className="text-2xl font-bold text-blue-600 mb-2">
-                  Moving to next question in {nextTimer}...
+            {/* Waiting Screen */}
+            {quizStatus === 'waiting' && (
+              <div className="bg-white rounded-lg shadow-md p-6 text-center">
+                <h3 className="text-xl font-semibold text-gray-700 mb-4">Quiz is waiting to start</h3>
+                <p className="text-gray-500 mb-6">Participants can join using the access code: <span className="font-mono font-semibold">{quiz.access_code}</span></p>
+                <div className="text-sm text-gray-400">
+                  {participants.length} participant{participants.length !== 1 ? 's' : ''} waiting
                 </div>
-                <div className="text-blue-600">All participants will see the next question automatically</div>
+              </div>
+            )}
+
+            {/* Completed Screen */}
+            {quizStatus === 'completed' && (
+              <div className="bg-white rounded-lg shadow-md p-6 text-center">
+                <h3 className="text-xl font-semibold text-gray-700 mb-4">Quiz completed</h3>
+                <p className="text-gray-500 mb-6">All participants have finished the quiz.</p>
+                <button
+                  onClick={() => window.location.href = '/admin/quiz-results'}
+                  className="btn-primary"
+                >
+                  View Results
+                </button>
               </div>
             )}
           </div>
 
           {/* Participant Sidebar */}
-          {showParticipantList && (
-            <div className="bg-white rounded-lg shadow-md p-6 h-fit">
-              <h2 className="text-lg font-semibold text-gray-900 mb-4">Participants</h2>
+          <div className="lg:col-span-1">
+            <div className="bg-white rounded-lg shadow-md p-6">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">Participants</h3>
+                <button
+                  onClick={() => setShowParticipantList(!showParticipantList)}
+                  className="text-blue-600 hover:text-blue-700 text-sm"
+                >
+                  {showParticipantList ? 'Hide' : 'Show'}
+                </button>
+              </div>
               
-              {/* Participant Stats */}
-              <div className="grid grid-cols-3 gap-2 mb-4">
-                <div className="text-center p-2 bg-yellow-50 rounded">
-                  <div className="text-lg font-bold text-yellow-600">{waitingParticipants}</div>
-                  <div className="text-xs text-yellow-600">Waiting</div>
-                </div>
-                <div className="text-center p-2 bg-green-50 rounded">
-                  <div className="text-lg font-bold text-green-600">{playingParticipants}</div>
-                  <div className="text-xs text-green-600">Playing</div>
-                </div>
-                <div className="text-center p-2 bg-blue-50 rounded">
-                  <div className="text-lg font-bold text-blue-600">{completedParticipants}</div>
-                  <div className="text-xs text-blue-600">Completed</div>
-                </div>
-              </div>
-
-              {/* Participant List */}
-              <div className="space-y-2 max-h-96 overflow-y-auto">
-                {participants.map((participant) => (
-                  <div key={participant.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
-                    <div>
-                      <div className="font-medium text-gray-900">{participant.name}</div>
-                      <div className="text-xs text-gray-500">
-                        Joined: {new Date(participant.created_at).toLocaleTimeString()}
+              {showParticipantList && (
+                <div className="space-y-3">
+                  {participants.length === 0 ? (
+                    <p className="text-gray-500 text-sm">No participants yet</p>
+                  ) : (
+                    participants.map((participant) => (
+                      <div key={participant.id} className="flex justify-between items-center p-3 bg-gray-50 rounded-lg">
+                        <div>
+                          <div className="font-medium text-gray-900">{participant.name}</div>
+                          <div className="text-sm text-gray-500">
+                            {participant.email || 'No email'}
+                          </div>
+                        </div>
+                        <div className={`text-xs px-2 py-1 rounded-full ${
+                          participant.status === 'waiting' ? 'bg-yellow-100 text-yellow-800' :
+                          participant.status === 'playing' ? 'bg-green-100 text-green-800' :
+                          'bg-gray-100 text-gray-800'
+                        }`}>
+                          {participant.status}
+                        </div>
                       </div>
-                    </div>
-                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${getParticipantStatusColor(participant.status)}`}>
-                      {participant.status}
-                    </span>
-                  </div>
-                ))}
-                {participants.length === 0 && (
-                  <div className="text-center text-gray-500 py-4">
-                    No participants yet
-                  </div>
-                )}
-              </div>
+                    ))
+                  )}
+                </div>
+              )}
             </div>
-          )}
-        </div>
-
-        {/* Error Messages */}
-        {error && (
-          <div className="mt-6 text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg">
-            {error}
           </div>
-        )}
+        </div>
       </div>
+
+      {/* Question Switching Timer Overlay */}
+      {showNextTimer && (
+        <div className="fixed inset-0 bg-blue-600 bg-opacity-90 flex items-center justify-center z-50">
+          <div className="text-center text-white">
+            <div className="text-6xl font-bold mb-4">{nextTimer}</div>
+            <div className="text-xl">Next Question</div>
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div className="mt-6 text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg">
+          {error}
+        </div>
+      )}
+      
+      <PerformanceMonitor isAdmin={true} />
     </div>
   )
 }

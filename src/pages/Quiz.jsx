@@ -1,6 +1,8 @@
-import React, { useState, useEffect } from 'react'
-import { supabase, TABLES, PARTICIPANT_STATUS, QUESTION_TYPES } from '../utils/supabaseClient'
+import React, { useState, useEffect, useCallback, useMemo } from 'react'
+import { supabase, TABLES, PARTICIPANT_STATUS, QUESTION_TYPES, performanceUtils, rateLimiter, errorHandler } from '../utils/supabaseClient'
 import logo from '../assets/logo.png'
+import PerformanceMonitor from '../components/PerformanceMonitor'
+
 
 const Quiz = () => {
   const [quiz, setQuiz] = useState(null)
@@ -18,6 +20,23 @@ const Quiz = () => {
   const [questionTimeLeft, setQuestionTimeLeft] = useState(null)
   const [startTime, setStartTime] = useState(null)
   const [questionStartTime, setQuestionStartTime] = useState(null)
+  
+  // Question feedback states
+  const [showFeedback, setShowFeedback] = useState(false)
+  const [feedbackData, setFeedbackData] = useState({
+    isCorrect: false,
+    points: 0,
+    correctAnswer: '',
+    userAnswer: ''
+  })
+  
+  // Question switching timer states
+  const [showQuestionTimer, setShowQuestionTimer] = useState(false)
+  const [questionTimer, setQuestionTimer] = useState(3)
+  
+  // Submit and wait states
+  const [showWaitScreen, setShowWaitScreen] = useState(false)
+  const [submittedAnswers, setSubmittedAnswers] = useState({})
 
   useEffect(() => {
     // Get quiz and participant info from session storage
@@ -83,49 +102,59 @@ const Quiz = () => {
     }
   }, [questionTimeLeft, currentQuestionIndex, quizStatus])
 
-  // Listen for admin-controlled question changes
+    // Listen for admin-controlled question changes with optimized subscription
   useEffect(() => {
     if (!quiz) return
 
-    const quizSubscription = supabase
-      .channel('participant-quiz-control')
-      .on('postgres_changes', 
-        { 
-          event: '*', 
-          schema: 'public', 
-          table: TABLES.QUIZZES,
-          filter: `id=eq.${quiz.id}`
-        }, 
-        (payload) => {
-          console.log('Quiz change:', payload)
-          if (payload.new) {
-            setQuizStatus(payload.new.status)
-            
-            if (payload.new.current_question_index !== undefined) {
-              const newQuestionIndex = payload.new.current_question_index
-              if (newQuestionIndex !== currentQuestionIndex) {
-                console.log(`Admin moved to question ${newQuestionIndex + 1}`)
-                setCurrentQuestionIndex(newQuestionIndex)
-                
-                // Set timer for new question (use global timer from quiz)
-                if (questions[newQuestionIndex] && quiz.question_timer_seconds) {
-                  setQuestionTimeLeft(quiz.question_timer_seconds)
-                  setQuestionStartTime(new Date())
-                } else {
-                  setQuestionTimeLeft(null)
-                  setQuestionStartTime(null)
-                }
-              }
+    // Rate limiting check
+    const clientKey = `quiz-${quiz.id}-${participant?.id || 'anonymous'}`
+    if (!rateLimiter.isAllowed(clientKey, 200, 60000)) {
+      console.warn('Rate limit exceeded for quiz subscription')
+      return
+    }
+
+    const quizSubscription = performanceUtils.createOptimizedSubscription(
+      'participant-quiz-control',
+      TABLES.QUIZZES,
+      `id=eq.${quiz.id}`,
+      (payload) => {
+        console.log('Quiz change:', payload)
+        if (payload.new) {
+          // Update quiz status
+          setQuizStatus(payload.new.status)
+          
+          // Update current question index if available
+          if (payload.new.current_question_index !== undefined) {
+            // Show question switching timer
+            if (payload.new.current_question_index !== currentQuestionIndex) {
+              setShowQuestionTimer(true)
+              setQuestionTimer(3)
+              
+              const countdown = setInterval(() => {
+                setQuestionTimer(prev => {
+                  if (prev <= 1) {
+                    clearInterval(countdown)
+                    setShowQuestionTimer(false)
+                    setCurrentQuestionIndex(payload.new.current_question_index)
+                    initializeQuestionTimer()
+                    // Reset submitted answers for new question
+                    setSubmittedAnswers({})
+                    setShowWaitScreen(false)
+                    return 3
+                  }
+                  return prev - 1
+                })
+              }, 1000)
             }
           }
         }
-      )
-      .subscribe()
+      }
+    )
 
     return () => {
       quizSubscription.unsubscribe()
     }
-  }, [quiz, currentQuestionIndex, questions])
+  }, [quiz, currentQuestionIndex, questions, participant?.id])
 
   const initializeTimers = () => {
     // Set total quiz timer
@@ -141,29 +170,59 @@ const Quiz = () => {
     }
   }
 
+  const initializeQuestionTimer = () => {
+    // Set question timer for current question (use global timer from quiz)
+    if (questions[currentQuestionIndex] && quiz.question_timer_seconds) {
+      setQuestionTimeLeft(quiz.question_timer_seconds)
+      setQuestionStartTime(new Date())
+    } else {
+      setQuestionTimeLeft(null)
+      setQuestionStartTime(null)
+    }
+  }
+
   const handleQuestionTimeout = () => {
+    // Hide wait screen first
+    setShowWaitScreen(false)
+    
     // Auto-save current answer if any
     const currentQuestion = questions[currentQuestionIndex]
-    if (currentQuestion && answers[currentQuestion.id]) {
-      // Answer already saved, just move to next
-    }
-
-    // Move to next question or complete quiz
-    if (currentQuestionIndex < questions.length - 1) {
-      setCurrentQuestionIndex(prev => prev + 1)
-      // Set timer for next question (use global timer from quiz)
-      const nextQuestion = questions[currentQuestionIndex + 1]
-      if (nextQuestion && quiz.question_timer_seconds) {
-        setQuestionTimeLeft(quiz.question_timer_seconds)
-        setQuestionStartTime(new Date())
+    const userAnswer = answers[currentQuestion.id] || ''
+    
+    // Check if answer is correct
+    const isCorrect = userAnswer === currentQuestion.correct_answer
+    const points = isCorrect ? (currentQuestion.points || 1) : 0
+    
+    // Show feedback
+    setFeedbackData({
+      isCorrect,
+      points,
+      correctAnswer: currentQuestion.correct_answer,
+      userAnswer: userAnswer
+    })
+    setShowFeedback(true)
+    
+    // Hide feedback after 3 seconds and move to next question
+    setTimeout(() => {
+      setShowFeedback(false)
+      
+      // Move to next question or complete quiz
+      if (currentQuestionIndex < questions.length - 1) {
+        setCurrentQuestionIndex(prev => prev + 1)
+        // Set timer for next question (use global timer from quiz)
+        const nextQuestion = questions[currentQuestionIndex + 1]
+        if (nextQuestion && quiz.question_timer_seconds) {
+          setQuestionTimeLeft(quiz.question_timer_seconds)
+          setQuestionStartTime(new Date())
+        } else {
+          setQuestionTimeLeft(null)
+          setQuestionStartTime(null)
+        }
       } else {
-        setQuestionTimeLeft(null)
-        setQuestionStartTime(null)
+        // Last question, complete quiz
+        handleSubmitQuiz()
       }
-    } else {
-      // Last question, complete quiz
-      handleSubmitQuiz()
-    }
+    }, 3000)
   }
 
   const handleAutoSubmit = () => {
@@ -202,8 +261,42 @@ const Quiz = () => {
     }))
   }
 
-  const handleSubmitQuiz = async () => {
+  const handleAnswerSubmit = useCallback((questionId) => {
+    // Rate limiting check
+    const clientKey = `answer-submit-${participant?.id || 'anonymous'}`
+    if (!rateLimiter.isAllowed(clientKey, 50, 60000)) {
+      setError('Too many answer submissions. Please wait a moment.')
+      return
+    }
+
+    const currentQuestion = questions[currentQuestionIndex]
+    const userAnswer = answers[questionId] || ''
+    
+    // Store the submitted answer
+    setSubmittedAnswers(prev => ({
+      ...prev,
+      [questionId]: userAnswer
+    }))
+    
+    // Show wait screen
+    setShowWaitScreen(true)
+    
+    // Disable the submit button for this question
+    setAnswers(prev => ({
+      ...prev,
+      [questionId]: userAnswer
+    }))
+  }, [questions, currentQuestionIndex, answers, participant?.id])
+
+  const handleSubmitQuiz = useCallback(async () => {
     try {
+      // Rate limiting check
+      const clientKey = `quiz-submit-${participant?.id || 'anonymous'}`
+      if (!rateLimiter.isAllowed(clientKey, 10, 60000)) {
+        setError('Too many quiz submissions. Please wait a moment.')
+        return
+      }
+
       // Calculate time taken for each answer
       const answerEntries = Object.entries(answers).map(([questionId, answer]) => {
         const question = questions.find(q => q.id === questionId)
@@ -219,35 +312,40 @@ const Quiz = () => {
         }
       })
 
-      const { error } = await supabase
-        .from(TABLES.ANSWERS)
-        .insert(answerEntries)
+      // Use retry mechanism for database operations
+      await performanceUtils.retryOperation(async () => {
+        const { error } = await supabase
+          .from(TABLES.ANSWERS)
+          .insert(answerEntries)
 
-      if (error) {
-        console.error('Error saving answers:', error)
-        setError('Failed to submit answers')
-        return
-      }
+        if (error) {
+          console.error('Error saving answers:', error)
+          throw new Error('Failed to submit answers')
+        }
+      })
 
       // Update participant status to completed
-      const { error: participantError } = await supabase
-        .from(TABLES.PARTICIPANTS)
-        .update({ 
-          status: PARTICIPANT_STATUS.COMPLETED,
-          completed_at: new Date().toISOString()
-        })
-        .eq('id', participant.id)
+      await performanceUtils.retryOperation(async () => {
+        const { error: participantError } = await supabase
+          .from(TABLES.PARTICIPANTS)
+          .update({ 
+            status: PARTICIPANT_STATUS.COMPLETED,
+            completed_at: new Date().toISOString()
+          })
+          .eq('id', participant.id)
 
-      if (participantError) {
-        console.error('Error updating participant status:', participantError)
-      }
+        if (participantError) {
+          console.error('Error updating participant status:', participantError)
+          throw participantError
+        }
+      })
 
       setQuizCompleted(true)
     } catch (error) {
       console.error('Error in handleSubmitQuiz:', error)
       setError('Failed to submit quiz')
     }
-  }
+  }, [answers, questions, questionStartTime, quiz?.id, participant?.id])
 
   const formatTime = (seconds) => {
     if (seconds === null) return null
@@ -389,6 +487,68 @@ const Quiz = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+      {/* Question Switching Timer Overlay */}
+      {showQuestionTimer && (
+        <div className="fixed inset-0 bg-blue-600 bg-opacity-90 flex items-center justify-center z-50">
+          <div className="text-center text-white">
+            <div className="w-32 h-32 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto mb-6">
+              <span className="text-6xl font-bold">{questionTimer}</span>
+            </div>
+            <h2 className="text-3xl font-bold mb-2">Next Question</h2>
+            <p className="text-xl opacity-90">Preparing your next question...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Wait Screen Overlay */}
+      {showWaitScreen && (
+        <div className="fixed inset-0 bg-blue-600 bg-opacity-90 flex items-center justify-center z-50">
+          <div className="text-center text-white">
+            <div className="w-32 h-32 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto mb-6">
+              <svg className="w-16 h-16 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+            </div>
+            <h2 className="text-3xl font-bold mb-2">Wait a minute...</h2>
+            <p className="text-xl opacity-90">Your answer has been submitted. Please wait for the timer to complete.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Question Feedback Overlay */}
+      {showFeedback && (
+        <div className="fixed inset-0 bg-blue-600 bg-opacity-95 flex items-center justify-center z-50">
+          <div className="text-center text-white">
+            {feedbackData.isCorrect ? (
+              <div className="space-y-4">
+                <div className="w-24 h-24 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto">
+                  <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+                <h2 className="text-3xl font-bold">Correct!</h2>
+                <div className="text-2xl font-bold">+{feedbackData.points} points</div>
+                <p className="opacity-90">Great job! Moving to next question...</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <div className="w-24 h-24 bg-white bg-opacity-20 rounded-full flex items-center justify-center mx-auto">
+                  <svg className="w-12 h-12 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </div>
+                <h2 className="text-3xl font-bold">Wrong!</h2>
+                <div className="text-2xl font-bold">+0 points</div>
+                <div className="space-y-2">
+                  <p className="opacity-90">Your answer: <span className="font-semibold">{feedbackData.userAnswer || 'No answer'}</span></p>
+                  <p className="opacity-90">Correct answer: <span className="font-semibold">{feedbackData.correctAnswer}</span></p>
+                </div>
+                <p className="opacity-90">Moving to next question...</p>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       <div className="max-w-4xl mx-auto">
         {/* Header */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
@@ -482,17 +642,32 @@ const Quiz = () => {
               </div>
             </div>
 
-            {renderQuestion(currentQuestion)}
+                         {renderQuestion(currentQuestion)}
 
-            {error && (
-              <div className="text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg mt-4">
-                {error}
+                           {/* Submit Answer Button */}
+              <div className="mt-6 text-center">
+                <button
+                  onClick={() => handleAnswerSubmit(currentQuestion.id)}
+                  disabled={!answers[currentQuestion.id] || submittedAnswers[currentQuestion.id]}
+                  className={`px-6 py-3 rounded-lg font-medium ${
+                    !answers[currentQuestion.id] || submittedAnswers[currentQuestion.id]
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                  }`}
+                >
+                  {submittedAnswers[currentQuestion.id] ? 'Answer Submitted' : 'Submit Answer'}
+                </button>
               </div>
-            )}
+
+             {error && (
+               <div className="text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg mt-4">
+                 {error}
+               </div>
+             )}
           </div>
         )}
 
-        {/* Admin Controlled Navigation */}
+        {/* Submit Quiz Button */}
         {quizStatus === 'playing' && (
           <div className="bg-white rounded-lg shadow-md p-6">
             <div className="text-center">
@@ -514,10 +689,13 @@ const Quiz = () => {
               </div>
             </div>
           </div>
-        )}
-      </div>
-    </div>
-  )
-}
+                 )}
+       </div>
+       
+       {/* Performance Monitor */}
+       <PerformanceMonitor isAdmin={false} />
+     </div>
+   )
+ }
 
 export default Quiz

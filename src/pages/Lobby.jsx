@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react'
-import { supabase, TABLES, PARTICIPANT_STATUS, QUIZ_STATUS } from '../utils/supabaseClient'
+import { supabase, TABLES, PARTICIPANT_STATUS } from '../utils/supabaseClient'
 import logo from '../assets/logo.png'
 
 const Lobby = () => {
@@ -14,117 +14,68 @@ const Lobby = () => {
     const quizData = sessionStorage.getItem('currentQuiz')
     const participantData = sessionStorage.getItem('currentParticipant')
     
-    if (!quizData || !participantData) {
+    if (quizData && participantData) {
+      setQuiz(JSON.parse(quizData))
+      setParticipant(JSON.parse(participantData))
+      fetchParticipants(JSON.parse(quizData).id)
+    } else {
+      // Redirect to access code input if no data
       window.location.href = '/'
-      return
     }
+  }, [])
 
-    const quizObj = JSON.parse(quizData)
-    const participantObj = JSON.parse(participantData)
-    
-    setQuiz(quizObj)
-    setParticipant(participantObj)
+  // Subscribe to participant updates
+  useEffect(() => {
+    if (!quiz) return
 
-    // Fetch all participants for this quiz
-    fetchParticipants(quizObj.id)
-
-    // Subscribe to real-time updates for participants
     const participantsSubscription = supabase
-      .channel('participants')
+      .channel('lobby-participants')
       .on('postgres_changes', 
         { 
           event: '*', 
           schema: 'public', 
           table: TABLES.PARTICIPANTS,
-          filter: `quiz_id=eq.${quizObj.id}`
+          filter: `quiz_id=eq.${quiz.id}`
         }, 
         (payload) => {
           console.log('Participant change:', payload)
-          fetchParticipants(quizObj.id)
+          fetchParticipants(quiz.id)
         }
       )
       .subscribe()
 
-    // Subscribe to real-time updates for quiz status
+    return () => {
+      participantsSubscription.unsubscribe()
+    }
+  }, [quiz])
+
+  // Subscribe to quiz status changes
+  useEffect(() => {
+    if (!quiz) return
+
     const quizSubscription = supabase
-      .channel('quiz-status')
+      .channel('lobby-quiz-status')
       .on('postgres_changes', 
         { 
           event: '*', 
           schema: 'public', 
           table: TABLES.QUIZZES,
-          filter: `id=eq.${quizObj.id}`
+          filter: `id=eq.${quiz.id}`
         }, 
         (payload) => {
           console.log('Quiz status change:', payload)
-          if (payload.new && payload.new.status === QUIZ_STATUS.PLAYING) {
-            // Quiz has started! Update participant start time and redirect
-            console.log('Quiz started! Updating participant start time...')
-            updateParticipantStartTime()
+          if (payload.new && payload.new.status === 'playing') {
+            // Quiz has started, redirect to quiz page
+            window.location.href = '/quiz'
           }
         }
       )
       .subscribe()
 
-    // Also check current quiz status immediately
-    checkQuizStatus(quizObj.id)
-
-    setLoading(false)
-
-    // Cleanup subscriptions
     return () => {
-      participantsSubscription.unsubscribe()
       quizSubscription.unsubscribe()
     }
-  }, [])
-
-  const checkQuizStatus = async (quizId) => {
-    try {
-      const { data, error } = await supabase
-        .from(TABLES.QUIZZES)
-        .select('status')
-        .eq('id', quizId)
-        .single()
-
-      if (error) {
-        console.error('Error checking quiz status:', error)
-        return
-      }
-
-      if (data && data.status === QUIZ_STATUS.PLAYING) {
-        // Quiz is already playing, update start time and redirect
-        console.log('Quiz is already playing! Updating participant start time...')
-        updateParticipantStartTime()
-      }
-    } catch (error) {
-      console.error('Error in checkQuizStatus:', error)
-    }
-  }
-
-  const updateParticipantStartTime = async () => {
-    try {
-      if (participant) {
-        const { error } = await supabase
-          .from(TABLES.PARTICIPANTS)
-          .update({ 
-            started_at: new Date().toISOString(),
-            status: PARTICIPANT_STATUS.PLAYING
-          })
-          .eq('id', participant.id)
-
-        if (error) {
-          console.error('Error updating participant start time:', error)
-        }
-      }
-      
-      // Redirect to quiz questions
-      window.location.href = '/quiz'
-    } catch (error) {
-      console.error('Error in updateParticipantStartTime:', error)
-      // Still redirect even if update fails
-      window.location.href = '/quiz'
-    }
-  }
+  }, [quiz])
 
   const fetchParticipants = async (quizId) => {
     try {
@@ -136,118 +87,174 @@ const Lobby = () => {
 
       if (error) {
         console.error('Error fetching participants:', error)
-        setError('Failed to load participants')
         return
       }
 
       setParticipants(data || [])
     } catch (error) {
       console.error('Error in fetchParticipants:', error)
-      setError('Failed to load participants')
+    } finally {
+      setLoading(false)
     }
   }
 
-  const handleLeaveLobby = async () => {
-    try {
-      // Remove participant from database
-      if (participant) {
-        await supabase
-          .from(TABLES.PARTICIPANTS)
-          .delete()
-          .eq('id', participant.id)
-      }
-    } catch (error) {
-      console.error('Error removing participant:', error)
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'waiting': return 'bg-yellow-100 text-yellow-800'
+      case 'playing': return 'bg-green-100 text-green-800'
+      case 'completed': return 'bg-blue-100 text-blue-800'
+      default: return 'bg-gray-100 text-gray-800'
     }
-
-    // Clear session storage
-    sessionStorage.removeItem('currentQuiz')
-    sessionStorage.removeItem('currentParticipant')
-    window.location.href = '/'
   }
 
   if (loading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-md p-8 max-w-md w-full text-center">
-          <p>Loading...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading lobby...</p>
+        </div>
+      </div>
+    )
+  }
+
+  if (!quiz || !participant) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-lg shadow-md p-8 max-w-md w-full text-center">
+          <p className="text-gray-600 mb-4">No quiz or participant data found</p>
+          <button
+            onClick={() => window.location.href = '/'}
+            className="btn-primary"
+          >
+            Back to Access Code
+          </button>
         </div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-md p-8 max-w-md w-full text-center">
-        {/* Logo Section */}
-        <div className="mb-6">
-          <div className="w-32 h-32 mx-auto mb-3 flex items-center justify-center">
-            <img src={logo} alt="Logo" className="w-full h-full object-contain" />
-          </div>
-        </div>
-        
-        <h1 className="text-3xl font-bold text-gray-900 mb-4">Waiting for Admin</h1>
-        <p className="text-gray-600 mb-6">You're in the lobby waiting for the admin to start the quiz</p>
-        
-        {/* Quiz Info */}
-        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
-          <p className="text-sm text-gray-600 mb-2">Quiz</p>
-          <p className="font-semibold text-blue-800 text-lg">{quiz?.title}</p>
-          <p className="text-sm text-gray-600 mb-2 mt-3">Access Code</p>
-          <p className="font-mono font-bold text-blue-600 text-lg">{quiz?.access_code}</p>
-        </div>
-
-        {/* Participant Info */}
-        {participant && (
-          <div className="bg-green-50 border border-green-200 rounded-lg p-4 mb-6">
-            <p className="text-sm text-gray-600 mb-2">Your Name</p>
-            <p className="font-semibold text-green-800 text-lg">{participant.name}</p>
-          </div>
-        )}
-
-        {/* Participants List */}
-        <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
-          <p className="text-sm text-gray-600 mb-3">Participants ({participants.length})</p>
-          <div className="space-y-2 max-h-32 overflow-y-auto">
-            {participants.map((p) => (
-              <div key={p.id} className="flex items-center justify-between text-sm">
-                <span className={`font-medium ${
-                  p.id === participant?.id ? 'text-blue-600' : 'text-gray-700'
-                }`}>
-                  {p.name}
-                  {p.id === participant?.id && ' (You)'}
-                </span>
-                <span className={`px-2 py-1 rounded text-xs ${
-                  p.status === PARTICIPANT_STATUS.WAITING ? 'bg-yellow-100 text-yellow-800' :
-                  p.status === PARTICIPANT_STATUS.PLAYING ? 'bg-blue-100 text-blue-800' :
-                  'bg-green-100 text-green-800'
-                }`}>
-                  {p.status}
-                </span>
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
+      <div className="max-w-4xl mx-auto">
+        {/* Header */}
+        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-4">
+              <div className="w-16 h-16 flex items-center justify-center">
+                <img src={logo} alt="Logo" className="w-full h-full object-contain" />
               </div>
-            ))}
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900">Quiz Lobby</h1>
+                <p className="text-gray-600">Waiting for the quiz to start</p>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-sm text-gray-500">Access Code</div>
+              <div className="font-mono font-semibold text-lg">{quiz.access_code}</div>
+            </div>
           </div>
         </div>
 
-        {/* Loading Animation */}
-        <div className="flex justify-center mb-6">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Quiz Info */}
+          <div className="lg:col-span-2">
+            <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+              <h2 className="text-xl font-semibold text-gray-900 mb-4">Quiz Information</h2>
+              <div className="space-y-3">
+                <div>
+                  <span className="text-sm font-medium text-gray-700">Title:</span>
+                  <p className="text-lg font-semibold text-gray-900">{quiz.title}</p>
+                </div>
+                {quiz.description && (
+                  <div>
+                    <span className="text-sm font-medium text-gray-700">Description:</span>
+                    <p className="text-gray-700">{quiz.description}</p>
+                  </div>
+                )}
+                <div>
+                  <span className="text-sm font-medium text-gray-700">Status:</span>
+                  <span className={`ml-2 px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(quiz.status)}`}>
+                    {quiz.status.toUpperCase()}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Welcome Message */}
+            <div className="bg-green-50 border border-green-200 rounded-lg p-6 text-center">
+              <h3 className="text-lg font-semibold text-green-900 mb-2">
+                Welcome, {participant.name}!
+              </h3>
+              <p className="text-green-700">
+                You're now in the quiz lobby. The instructor will start the quiz soon.
+              </p>
+              <div className="mt-4">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600 mx-auto"></div>
+                <p className="text-sm text-green-600 mt-2">Waiting for instructor...</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Participants List */}
+          <div className="lg:col-span-1">
+            <div className="bg-white rounded-lg shadow-md p-6">
+              <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                Participants ({participants.length})
+              </h3>
+              <div className="space-y-3 max-h-96 overflow-y-auto">
+                {participants.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                      <div>
+                        <div className="font-medium text-gray-900">{p.name}</div>
+                        {p.email && (
+                          <div className="text-xs text-gray-500">{p.email}</div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      {p.id === participant.id && (
+                        <span className="text-xs text-blue-600 font-medium">(You)</span>
+                      )}
+                      <div className={`text-xs px-2 py-1 rounded-full font-medium ${getStatusColor(p.status)}`}>
+                        {p.status}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+                {participants.length === 0 && (
+                  <div className="text-center text-gray-500 py-4">
+                    No participants yet
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
 
-        <p className="text-gray-500 text-sm mb-6">Please wait while the admin prepares the quiz...</p>
-
+        {/* Error Messages */}
         {error && (
-          <div className="text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg mb-6">
+          <div className="mt-6 text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg">
             {error}
           </div>
         )}
 
-        <button 
-          className="btn-secondary w-full"
-          onClick={handleLeaveLobby}
-        >
-          Leave Lobby
-        </button>
+        {/* Back Button */}
+        <div className="mt-6 text-center">
+          <button
+            onClick={() => {
+              // Remove from session storage
+              sessionStorage.removeItem('currentQuiz')
+              sessionStorage.removeItem('currentParticipant')
+              window.location.href = '/'
+            }}
+            className="btn-secondary"
+          >
+            Leave Lobby
+          </button>
+        </div>
       </div>
     </div>
   )

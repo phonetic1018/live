@@ -18,12 +18,19 @@ const AccessCodeInput = () => {
       return
     }
 
+    // Validate that access code is exactly 6 digits
+    if (!/^\d{6}$/.test(accessCode.trim())) {
+      setError('Access code must be exactly 6 digits')
+      setLoading(false)
+      return
+    }
+
     try {
       // Fetch quiz from Supabase
       const { data: quiz, error: quizError } = await supabase
         .from(TABLES.QUIZZES)
         .select('*')
-        .eq('access_code', accessCode.trim().toUpperCase())
+        .eq('access_code', accessCode.trim())
         .single()
 
       if (quizError || !quiz) {
@@ -72,10 +79,16 @@ const AccessCodeInput = () => {
             <input
               type="text"
               value={accessCode}
-              onChange={(e) => setAccessCode(e.target.value.toUpperCase())}
-              placeholder="Enter access code"
+              onChange={(e) => {
+                // Only allow numeric input
+                const numericValue = e.target.value.replace(/[^0-9]/g, '')
+                setAccessCode(numericValue)
+              }}
+              placeholder="Enter 6-digit code"
               className="input-field text-center text-2xl font-mono tracking-widest"
-              maxLength={8}
+              maxLength={6}
+              pattern="[0-9]*"
+              inputMode="numeric"
               required
             />
           </div>
@@ -88,58 +101,20 @@ const AccessCodeInput = () => {
 
           <button
             type="submit"
-            className="btn-primary w-full"
             disabled={loading}
+            className="btn-primary w-full"
           >
             {loading ? 'Joining...' : 'Join Quiz'}
           </button>
         </form>
 
-        <div className="mt-8 text-center">
-          <p className="text-sm text-gray-500 mb-4">
-            Are you an admin?{' '}
-            <button
-              onClick={() => window.location.href = '/admin/login'}
-              className="text-purple-600 hover:text-purple-700 font-medium"
-            >
-              Login here
-            </button>
+
+
+        <div className="text-center">
+          <p className="text-sm text-gray-500">
+            Need help? Contact your quiz administrator
           </p>
-          
-          {/* Quick Admin Access Links (for development) */}
-          <div className="border-t pt-4">
-            <p className="text-xs text-gray-400 mb-2">Quick Admin Access:</p>
-            <div className="flex flex-wrap justify-center gap-2 text-xs">
-              <button
-                onClick={() => window.location.href = '/admin/login'}
-                className="text-blue-600 hover:text-blue-700"
-              >
-                Login
-              </button>
-              <span className="text-gray-300">|</span>
-              <button
-                onClick={() => window.location.href = '/admin/dashboard'}
-                className="text-green-600 hover:text-green-700"
-              >
-                Dashboard
-              </button>
-              <span className="text-gray-300">|</span>
-              <button
-                onClick={() => window.location.href = '/admin/create-quiz'}
-                className="text-purple-600 hover:text-purple-700"
-              >
-                Create Quiz
-              </button>
-              <span className="text-gray-300">|</span>
-              <button
-                onClick={() => window.location.href = '/test'}
-                className="text-orange-600 hover:text-orange-700"
-              >
-                Test DB
-              </button>
-            </div>
-          </div>
-        </div> 
+        </div>
       </div>
     </div>
   )

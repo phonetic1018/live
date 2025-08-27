@@ -11,9 +11,6 @@ import CreateQuiz from './pages/CreateQuiz'
 import ManageQuiz from './pages/ManageQuiz'
 import QuizResults from './pages/QuizResults'
 import AdminQuiz from './pages/AdminQuiz'
-import SupabaseTest from './components/SupabaseTest'
-import TestPage from './pages/TestPage'
-import EnvTest from './components/EnvTest'
 
 // Add error boundary
 class ErrorBoundary extends React.Component {
@@ -77,11 +74,6 @@ function App() {
           <Route path="/admin/manage-quiz" element={<ManageQuiz />} />
           <Route path="/admin/quiz-results" element={<QuizResults />} />
           <Route path="/admin/quiz" element={<AdminQuiz />} />
-          
-          {/* Test Routes */}
-          <Route path="/test" element={<SupabaseTest />} />
-          <Route path="/test-page" element={<TestPage />} />
-          <Route path="/env-test" element={<EnvTest />} />
           
           {/* Default redirect */}
           <Route path="*" element={<Navigate to="/" replace />} />

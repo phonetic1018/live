@@ -1,21 +1,23 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { supabase, TABLES, PARTICIPANT_STATUS } from '../utils/supabaseClient'
 import logo from '../assets/logo.png'
 
 const EnterName = () => {
   const [participantName, setParticipantName] = useState('')
+  const [email, setEmail] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [quiz, setQuiz] = useState(null)
 
-  useEffect(() => {
+  React.useEffect(() => {
     // Get quiz info from session storage
     const quizData = sessionStorage.getItem('currentQuiz')
-    if (!quizData) {
+    if (quizData) {
+      setQuiz(JSON.parse(quizData))
+    } else {
+      // Redirect to access code input if no quiz data
       window.location.href = '/'
-      return
     }
-    setQuiz(JSON.parse(quizData))
   }, [])
 
   const handleSubmit = async (e) => {
@@ -29,14 +31,21 @@ const EnterName = () => {
       return
     }
 
+    if (!quiz) {
+      setError('No quiz found. Please try again.')
+      setLoading(false)
+      return
+    }
+
     try {
-      // Save participant to Supabase
+      // Create participant
       const { data: participant, error: participantError } = await supabase
         .from(TABLES.PARTICIPANTS)
         .insert([
           {
             quiz_id: quiz.id,
             name: participantName.trim(),
+            email: email.trim() || null,
             status: PARTICIPANT_STATUS.WAITING
           }
         ])
@@ -55,19 +64,20 @@ const EnterName = () => {
       
       // Navigate to lobby
       window.location.href = '/lobby'
-    } catch (err) {
-      console.error('Error in handleSubmit:', err)
-      setError('Something went wrong. Please try again.')
-    } finally {
-      setLoading(false)
+    } catch (error) {
+      console.error('Error joining quiz:', error)
+      setError('An error occurred. Please try again.')
     }
+    
+    setLoading(false)
   }
 
   if (!quiz) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
         <div className="bg-white rounded-lg shadow-md p-8 max-w-md w-full text-center">
-          <p>Loading...</p>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-600">Loading...</p>
         </div>
       </div>
     )
@@ -75,29 +85,43 @@ const EnterName = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-lg shadow-md p-8 max-w-md w-full text-center">
+      <div className="bg-white rounded-lg shadow-md p-8 max-w-md w-full">
         {/* Logo Section */}
-        <div className="mb-6">
-          <div className="w-32 h-32 mx-auto mb-3 flex items-center justify-center">
+        <div className="mb-6 text-center">
+          <div className="w-24 h-24 mx-auto mb-4 flex items-center justify-center">
             <img src={logo} alt="Logo" className="w-full h-full object-contain" />
           </div>
-        </div>
-
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Enter Your Name</h1>
-          <p className="text-gray-600">Join quiz: {quiz.title}</p>
+          <h1 className="text-2xl font-bold text-gray-900 mb-2">Enter Your Name</h1>
+          <p className="text-gray-600">Join the quiz: {quiz.title}</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
           <div>
+            <label htmlFor="participantName" className="block text-sm font-medium text-gray-700 mb-2">
+              Full Name *
+            </label>
             <input
               type="text"
+              id="participantName"
               value={participantName}
               onChange={(e) => setParticipantName(e.target.value)}
-              placeholder="Enter your name"
-              className="input-field text-center text-xl"
-              maxLength={30}
+              placeholder="Enter your full name"
+              className="input-field"
               required
+            />
+          </div>
+
+          <div>
+            <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
+              Email (Optional)
+            </label>
+            <input
+              type="email"
+              id="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="Enter your email address"
+              className="input-field"
             />
           </div>
 
@@ -107,24 +131,23 @@ const EnterName = () => {
             </div>
           )}
 
-          <div className="space-y-3">
-            <button
-              type="submit"
-              className="btn-primary w-full"
-              disabled={loading}
-            >
-              {loading ? 'Joining...' : 'Join Quiz'}
-            </button>
-            
-            <button
-              type="button"
-              onClick={() => window.location.href = '/'}
-              className="btn-secondary w-full"
-            >
-              Back
-            </button>
-          </div>
+          <button
+            type="submit"
+            disabled={loading || !participantName.trim()}
+            className="btn-primary w-full"
+          >
+            {loading ? 'Joining...' : 'Join Quiz'}
+          </button>
         </form>
+
+        <div className="mt-6 text-center">
+          <button
+            onClick={() => window.location.href = '/'}
+            className="text-blue-600 hover:text-blue-700 text-sm"
+          >
+            ← Back to Access Code
+          </button>
+        </div>
       </div>
     </div>
   )

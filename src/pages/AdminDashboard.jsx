@@ -83,16 +83,33 @@ const AdminDashboard = () => {
   }
 
   const handleCreateQuiz = () => {
-    // Generate a random access code
-    const accessCode = Math.random().toString(36).substring(2, 8).toUpperCase()
+    // Generate a random 6-digit numeric access code
+    const accessCode = Math.floor(100000 + Math.random() * 900000).toString()
     
     // Store the access code for the create quiz page
     sessionStorage.setItem('newQuizAccessCode', accessCode)
     navigateTo('/admin/create-quiz')
   }
 
+
+
   const startQuiz = async (quizId) => {
     try {
+      // Get the quiz data first
+      const { data: quizData, error: fetchError } = await supabase
+        .from(TABLES.QUIZZES)
+        .select('*')
+        .eq('id', quizId)
+        .single()
+
+      if (fetchError) {
+        console.error('Error fetching quiz:', fetchError)
+        return
+      }
+
+      // Store quiz data in session storage for admin quiz control
+      sessionStorage.setItem('currentQuiz', JSON.stringify(quizData))
+
       // Update quiz status to PLAYING
       const { error: quizError } = await supabase
         .from(TABLES.QUIZZES)
@@ -119,19 +136,19 @@ const AdminDashboard = () => {
         // Don't return here as the quiz was already started
       }
 
-      // Store quiz data in session storage for admin quiz
-      const quiz = dashboardData.quizzes.find(q => q.id === quizId)
-      if (quiz) {
-        sessionStorage.setItem('currentQuiz', JSON.stringify(quiz))
-      }
+             // Store quiz data in session storage for admin quiz
+       const quiz = quizzes.find(q => q.id === quizId)
+       if (quiz) {
+         sessionStorage.setItem('currentQuiz', JSON.stringify(quiz))
+       }
 
       // Refresh dashboard data
       await fetchDashboardData()
       
       alert('Quiz started successfully! Redirecting to admin control panel...')
       
-      // Redirect to admin quiz control panel
-      window.location.href = '/admin/quiz'
+                    // Redirect to admin quiz control panel
+        window.location.href = '/admin/quiz'
       
     } catch (error) {
       console.error('Error starting quiz:', error)
@@ -139,10 +156,10 @@ const AdminDashboard = () => {
     }
   }
 
-  const joinQuiz = (quiz) => {
-    sessionStorage.setItem('currentQuiz', JSON.stringify(quiz))
-    window.location.href = '/lobby'
-  }
+     const joinQuiz = (quiz) => {
+     sessionStorage.setItem('currentQuiz', JSON.stringify(quiz))
+     window.location.href = '/join-quiz'
+   }
 
   if (!isAuthenticated) {
     return (
@@ -208,6 +225,8 @@ const AdminDashboard = () => {
             </div>
           </div>
 
+          
+
           {/* Quiz Results */}
           <div className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow cursor-pointer"
                onClick={() => navigateTo('/admin/quiz-results')}>
@@ -221,6 +240,8 @@ const AdminDashboard = () => {
               <p className="text-gray-600 text-sm">View detailed results and analytics</p>
             </div>
           </div>
+
+          
         </div>
 
         {/* Quick Stats */}
