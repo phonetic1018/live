@@ -67,6 +67,9 @@ const Quiz = () => {
 
     // Fetch quiz questions
     fetchQuestions(quizObj.id)
+    
+    // Fetch latest quiz status from database to ensure we have the most current status
+    fetchLatestQuizStatus(quizObj.id)
   }, [])
 
   // Initialize timers when questions are loaded
@@ -334,6 +337,45 @@ const Quiz = () => {
     }
   }
 
+  const fetchLatestQuizStatus = async (quizId) => {
+    try {
+      const { data, error } = await supabase
+        .from(TABLES.QUIZZES)
+        .select('status, current_question_index')
+        .eq('id', quizId)
+        .single()
+
+      if (error) {
+        console.error('Error fetching latest quiz status:', error)
+        return
+      }
+
+      console.log('Quiz component - Latest quiz status from DB:', data)
+      
+      if (data) {
+        // Update quiz status if it's different from session storage
+        if (data.status !== quizStatus) {
+          console.log('Quiz component - Updating quiz status from DB:', data.status)
+          setQuizStatus(data.status)
+        }
+        
+        // Update current question index if available
+        if (data.current_question_index !== undefined && data.current_question_index !== currentQuestionIndex) {
+          console.log('Quiz component - Updating question index from DB:', data.current_question_index)
+          setCurrentQuestionIndex(data.current_question_index)
+        }
+        
+        // If quiz is still waiting, redirect back to lobby
+        if (data.status === 'waiting') {
+          console.log('Quiz component - Quiz is still waiting, redirecting to lobby')
+          window.location.href = '/lobby'
+        }
+      }
+    } catch (error) {
+      console.error('Error in fetchLatestQuizStatus:', error)
+    }
+  }
+
   const handleAnswerChange = (questionId, answer) => {
     setAnswers(prev => ({
       ...prev,
@@ -585,6 +627,33 @@ const Quiz = () => {
 
   const currentQuestion = questions[currentQuestionIndex]
   const hasAnsweredCurrent = answers[currentQuestion.id]
+
+  // Show waiting screen if quiz is not yet started
+  if (quizStatus === 'waiting') {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-lg shadow-md p-8 max-w-md w-full text-center">
+          <div className="mb-6">
+            <div className="w-32 h-32 mx-auto mb-3 flex items-center justify-center">
+              <img src={logo} alt="Logo" className="w-full h-full object-contain" />
+            </div>
+          </div>
+          
+          <h1 className="text-2xl font-bold text-gray-900 mb-4">Waiting for Admin</h1>
+          <p className="text-gray-600 mb-6">The instructor will start the quiz soon. Please wait...</p>
+          
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          
+          <button 
+            className="btn-secondary w-full"
+            onClick={() => window.location.href = '/lobby'}
+          >
+            Back to Lobby
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">

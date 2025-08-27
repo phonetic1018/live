@@ -53,6 +53,8 @@ const Lobby = () => {
   useEffect(() => {
     if (!quiz) return
 
+    console.log('Lobby - Setting up quiz status subscription for quiz ID:', quiz.id)
+
     const quizSubscription = supabase
       .channel('lobby-quiz-status')
       .on('postgres_changes', 
@@ -73,8 +75,50 @@ const Lobby = () => {
       )
       .subscribe()
 
+    console.log('Lobby - Quiz status subscription set up successfully')
+
     return () => {
+      console.log('Lobby - Cleaning up quiz status subscription')
       quizSubscription.unsubscribe()
+    }
+  }, [quiz])
+
+  // Poll quiz status as a fallback mechanism
+  useEffect(() => {
+    if (!quiz) return
+
+    console.log('Lobby - Setting up quiz status polling for quiz ID:', quiz.id)
+
+    const pollQuizStatus = async () => {
+      try {
+        const { data, error } = await supabase
+          .from(TABLES.QUIZZES)
+          .select('status')
+          .eq('id', quiz.id)
+          .single()
+
+        if (error) {
+          console.error('Error polling quiz status:', error)
+          return
+        }
+
+        console.log('Lobby - Poll result:', data)
+
+        if (data && data.status === 'playing') {
+          console.log('Lobby - Poll detected quiz started, redirecting to quiz page')
+          window.location.href = '/quiz'
+        }
+      } catch (error) {
+        console.error('Error in pollQuizStatus:', error)
+      }
+    }
+
+    // Poll every 2 seconds
+    const pollInterval = setInterval(pollQuizStatus, 2000)
+
+    return () => {
+      console.log('Lobby - Cleaning up quiz status polling')
+      clearInterval(pollInterval)
     }
   }, [quiz])
 
@@ -151,7 +195,15 @@ const Lobby = () => {
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600 mx-auto mb-4"></div>
         
         {/* Waiting Message */}
-        <p className="text-blue-600">Waiting for instructor...</p>
+        <p className="text-blue-600 mb-4">Waiting for instructor...</p>
+        
+        {/* Manual Refresh Button */}
+        <button
+          onClick={() => window.location.reload()}
+          className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+        >
+          Refresh Status
+        </button>
       </div>
     </div>
   )
