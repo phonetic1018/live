@@ -12,6 +12,8 @@ const AdminQuiz = () => {
   const [error, setError] = useState('')
   const [showNextTimer, setShowNextTimer] = useState(false)
   const [nextTimer, setNextTimer] = useState(3)
+  const [quizStatus, setQuizStatus] = useState('waiting')
+  const [showParticipantList, setShowParticipantList] = useState(true)
 
   useEffect(() => {
     // Check if admin is authenticated
@@ -24,6 +26,8 @@ const AdminQuiz = () => {
       if (quizData) {
         const quizObj = JSON.parse(quizData)
         setQuiz(quizObj)
+        setQuizStatus(quizObj.status)
+        setCurrentQuestionIndex(quizObj.current_question_index || 0)
         fetchQuestions(quizObj.id)
         fetchParticipants(quizObj.id)
       }
@@ -55,6 +59,34 @@ const AdminQuiz = () => {
 
     return () => {
       participantsSubscription.unsubscribe()
+    }
+  }, [quiz])
+
+  // Subscribe to quiz status updates
+  useEffect(() => {
+    if (!quiz) return
+
+    const quizSubscription = supabase
+      .channel('admin-quiz-status')
+      .on('postgres_changes', 
+        { 
+          event: '*', 
+          schema: 'public', 
+          table: TABLES.QUIZZES,
+          filter: `id=eq.${quiz.id}`
+        }, 
+        (payload) => {
+          console.log('Quiz status change:', payload)
+          if (payload.new) {
+            setQuizStatus(payload.new.status)
+            setCurrentQuestionIndex(payload.new.current_question_index || 0)
+          }
+        }
+      )
+      .subscribe()
+
+    return () => {
+      quizSubscription.unsubscribe()
     }
   }, [quiz])
 
@@ -101,25 +133,91 @@ const AdminQuiz = () => {
     }
   }
 
+  const startQuiz = async () => {
+    try {
+      const { error } = await supabase
+        .from(TABLES.QUIZZES)
+        .update({ 
+          status: QUIZ_STATUS.PLAYING,
+          current_question_index: 0
+        })
+        .eq('id', quiz.id)
+
+      if (error) {
+        console.error('Error starting quiz:', error)
+        setError('Failed to start quiz')
+        return
+      }
+
+      setQuizStatus(QUIZ_STATUS.PLAYING)
+      setCurrentQuestionIndex(0)
+      setError('')
+    } catch (error) {
+      console.error('Error in startQuiz:', error)
+      setError('Failed to start quiz')
+    }
+  }
+
+  const pauseQuiz = async () => {
+    try {
+      const { error } = await supabase
+        .from(TABLES.QUIZZES)
+        .update({ status: QUIZ_STATUS.WAITING })
+        .eq('id', quiz.id)
+
+      if (error) {
+        console.error('Error pausing quiz:', error)
+        setError('Failed to pause quiz')
+        return
+      }
+
+      setQuizStatus(QUIZ_STATUS.WAITING)
+      setError('')
+    } catch (error) {
+      console.error('Error in pauseQuiz:', error)
+      setError('Failed to pause quiz')
+    }
+  }
+
+  const stopQuiz = async () => {
+    try {
+      const { error } = await supabase
+        .from(TABLES.QUIZZES)
+        .update({ status: QUIZ_STATUS.COMPLETED })
+        .eq('id', quiz.id)
+
+      if (error) {
+        console.error('Error stopping quiz:', error)
+        setError('Failed to stop quiz')
+        return
+      }
+
+      setQuizStatus(QUIZ_STATUS.COMPLETED)
+      setError('')
+      
+      // Redirect to results page
+      window.location.href = '/admin/results'
+    } catch (error) {
+      console.error('Error in stopQuiz:', error)
+      setError('Failed to stop quiz')
+    }
+  }
+
   const handleNextQuestion = async () => {
     if (currentQuestionIndex >= questions.length - 1) {
-      // Quiz completed
-      await completeQuiz()
+      // Last question, complete quiz
+      await stopQuiz()
       return
     }
 
-    // Show 3-second timer
     setShowNextTimer(true)
     setNextTimer(3)
 
-    const timer = setInterval(() => {
+    const countdown = setInterval(() => {
       setNextTimer(prev => {
         if (prev <= 1) {
-          clearInterval(timer)
+          clearInterval(countdown)
           setShowNextTimer(false)
-          // Move to next question
-          setCurrentQuestionIndex(prev => prev + 1)
-          // Update quiz status to show current question
           updateQuizQuestion(currentQuestionIndex + 1)
           return 3
         }
@@ -132,117 +230,104 @@ const AdminQuiz = () => {
     try {
       const { error } = await supabase
         .from(TABLES.QUIZZES)
-        .update({ 
-          current_question_index: questionIndex,
-          updated_at: new Date().toISOString()
-        })
+        .update({ current_question_index: questionIndex })
         .eq('id', quiz.id)
 
       if (error) {
-        console.error('Error updating quiz question:', error)
-      }
-    } catch (error) {
-      console.error('Error in updateQuizQuestion:', error)
-    }
-  }
-
-  const completeQuiz = async () => {
-    try {
-      // Update quiz status to completed
-      const { error: quizError } = await supabase
-        .from(TABLES.QUIZZES)
-        .update({ 
-          status: QUIZ_STATUS.COMPLETED,
-          updated_at: new Date().toISOString()
-        })
-        .eq('id', quiz.id)
-
-      if (quizError) {
-        console.error('Error completing quiz:', quizError)
+        console.error('Error updating question:', error)
+        setError('Failed to move to next question')
         return
       }
 
-      // Update all participants to completed
-      const { error: participantsError } = await supabase
-        .from(TABLES.PARTICIPANTS)
-        .update({ 
-          status: PARTICIPANT_STATUS.COMPLETED,
-          completed_at: new Date().toISOString()
-        })
-        .eq('quiz_id', quiz.id)
-
-      if (participantsError) {
-        console.error('Error updating participants:', participantsError)
-      }
-
-      // Redirect to results
-      window.location.href = '/admin/quiz-results'
+      setCurrentQuestionIndex(questionIndex)
+      setError('')
     } catch (error) {
-      console.error('Error in completeQuiz:', error)
+      console.error('Error in updateQuizQuestion:', error)
+      setError('Failed to move to next question')
     }
   }
 
   const handlePreviousQuestion = () => {
     if (currentQuestionIndex > 0) {
-      setCurrentQuestionIndex(prev => prev - 1)
       updateQuizQuestion(currentQuestionIndex - 1)
     }
   }
 
+  const completeQuiz = async () => {
+    await stopQuiz()
+  }
+
   const renderQuestion = (question) => {
-    switch (question.type) {
-      case 'mcq':
-        return (
+    if (!question) return null
+
+    return (
+      <div className="bg-white rounded-lg shadow-md p-6">
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-sm text-gray-500">Question {currentQuestionIndex + 1} of {questions.length}</span>
+            <div className="flex items-center space-x-2">
+              <span className={`px-2 py-1 rounded-full text-xs rounded-full ${
+                question.difficulty === 'easy' ? 'bg-green-100 text-green-800' :
+                question.difficulty === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                'bg-red-100 text-red-800'
+              }`}>
+                {question.difficulty}
+              </span>
+              <span className="text-sm text-gray-500">{question.points} points</span>
+            </div>
+          </div>
+          <h2 className="text-xl font-semibold text-gray-900 mb-4">
+            {question.question}
+          </h2>
+          <div className="text-sm text-gray-500 mb-4">
+            Type: {question.type.replace('_', ' ').toUpperCase()}
+          </div>
+        </div>
+
+        {question.type === 'mcq' && question.options && (
           <div className="space-y-3">
-            {question.options?.map((option, index) => (
-              <div key={index} className="flex items-center space-x-3">
-                <div className={`w-4 h-4 rounded-full border-2 ${
-                  option === question.correct_answer 
-                    ? 'bg-green-500 border-green-500' 
-                    : 'border-gray-300'
-                }`}></div>
-                <span className={`text-gray-700 ${
-                  option === question.correct_answer ? 'font-bold text-green-600' : ''
-                }`}>
-                  {option}
-                  {option === question.correct_answer && ' (Correct)'}
-                </span>
+            <h3 className="font-medium text-gray-900 mb-3">Options:</h3>
+            {question.options.map((option, index) => (
+              <div key={index} className="flex items-center space-x-3 p-3 bg-gray-50 rounded-lg">
+                <span className="text-sm font-medium text-gray-500">{String.fromCharCode(65 + index)}.</span>
+                <span className="text-gray-700">{option}</span>
+                {option === question.correct_answer && (
+                  <span className="ml-auto text-green-600 font-medium">✓ Correct</span>
+                )}
               </div>
             ))}
           </div>
-        )
+        )}
 
-      case 'true_false':
-        return (
-          <div className="space-y-3">
-            {['True', 'False'].map((option) => (
-              <div key={option} className="flex items-center space-x-3">
-                <div className={`w-4 h-4 rounded-full border-2 ${
-                  option === question.correct_answer 
-                    ? 'bg-green-500 border-green-500' 
-                    : 'border-gray-300'
-                }`}></div>
-                <span className={`text-gray-700 ${
-                  option === question.correct_answer ? 'font-bold text-green-600' : ''
-                }`}>
-                  {option}
-                  {option === question.correct_answer && ' (Correct)'}
-                </span>
-              </div>
-            ))}
-          </div>
-        )
+        <div className="mt-6 p-4 bg-green-50 border border-green-200 rounded-lg">
+          <h3 className="font-medium text-green-900 mb-2">Correct Answer:</h3>
+          <p className="text-green-800">{question.correct_answer}</p>
+          {question.explanation && (
+            <div className="mt-3 pt-3 border-t border-green-200">
+              <h4 className="font-medium text-green-900 mb-1">Explanation:</h4>
+              <p className="text-green-700 text-sm">{question.explanation}</p>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
 
-      case 'short_answer':
-        return (
-          <div className="bg-gray-50 p-4 rounded-lg">
-            <p className="text-gray-600 mb-2">Correct Answer:</p>
-            <p className="font-semibold text-green-600">{question.correct_answer}</p>
-          </div>
-        )
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'waiting': return 'bg-yellow-100 text-yellow-800'
+      case 'playing': return 'bg-green-100 text-green-800'
+      case 'completed': return 'bg-blue-100 text-blue-800'
+      default: return 'bg-gray-100 text-gray-800'
+    }
+  }
 
-      default:
-        return <p className="text-gray-500">Question type not supported</p>
+  const getParticipantStatusColor = (status) => {
+    switch (status) {
+      case 'waiting': return 'bg-yellow-100 text-yellow-800'
+      case 'playing': return 'bg-green-100 text-green-800'
+      case 'completed': return 'bg-blue-100 text-blue-800'
+      default: return 'bg-gray-100 text-gray-800'
     }
   }
 
@@ -267,30 +352,14 @@ const AdminQuiz = () => {
     )
   }
 
-  if (questions.length === 0) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center p-4">
-        <div className="bg-white rounded-lg shadow-md p-8 max-w-md w-full text-center">
-          <h1 className="text-2xl font-bold text-gray-900 mb-4">No Questions Found</h1>
-          <p className="text-gray-600 mb-6">This quiz doesn't have any questions yet.</p>
-          <button 
-            className="btn-secondary w-full"
-            onClick={() => window.location.href = '/admin/dashboard'}
-          >
-            Back to Dashboard
-          </button>
-        </div>
-      </div>
-    )
-  }
-
   const currentQuestion = questions[currentQuestionIndex]
-  const isFirstQuestion = currentQuestionIndex === 0
-  const isLastQuestion = currentQuestionIndex === questions.length - 1
+  const waitingParticipants = participants.filter(p => p.status === 'waiting').length
+  const playingParticipants = participants.filter(p => p.status === 'playing').length
+  const completedParticipants = participants.filter(p => p.status === 'completed').length
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <div className="max-w-6xl mx-auto">
+      <div className="max-w-7xl mx-auto">
         {/* Header */}
         <div className="bg-white rounded-lg shadow-md p-6 mb-6">
           <div className="flex items-center justify-between">
@@ -303,108 +372,167 @@ const AdminQuiz = () => {
                 <p className="text-gray-600">Admin Control Panel</p>
               </div>
             </div>
-            <div className="text-right">
-              <p className="text-sm text-gray-600">Question</p>
-              <p className="font-semibold text-gray-900">{currentQuestionIndex + 1} of {questions.length}</p>
+            <div className="flex items-center space-x-4">
+              <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(quizStatus)}`}>
+                {quizStatus.toUpperCase()}
+              </span>
+              <button
+                onClick={() => setShowParticipantList(!showParticipantList)}
+                className="text-blue-600 hover:text-blue-700"
+              >
+                {showParticipantList ? 'Hide' : 'Show'} Participants
+              </button>
             </div>
           </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Question Display */}
-          <div className="lg:col-span-2">
-            <div className="bg-white rounded-lg shadow-md p-8 mb-6">
-              <div className="mb-6">
-                <h2 className="text-xl font-semibold text-gray-900 mb-4">
-                  {currentQuestion.question}
-                </h2>
-                <div className="text-sm text-gray-500 mb-4">
-                  Type: {currentQuestion.type.replace('_', ' ').toUpperCase()}
-                </div>
+          {/* Main Content */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* Quiz Controls */}
+            <div className="bg-white rounded-lg shadow-md p-6">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Quiz Controls</h2>
+              <div className="flex flex-wrap gap-3">
+                {quizStatus === 'waiting' && (
+                  <button
+                    onClick={startQuiz}
+                    className="btn-primary"
+                  >
+                    ▶️ Start Quiz
+                  </button>
+                )}
+                {quizStatus === 'playing' && (
+                  <>
+                    <button
+                      onClick={pauseQuiz}
+                      className="btn-secondary"
+                    >
+                      ⏸️ Pause Quiz
+                    </button>
+                    <button
+                      onClick={stopQuiz}
+                      className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-lg font-medium"
+                    >
+                      ⏹️ Stop Quiz
+                    </button>
+                  </>
+                )}
+                {quizStatus === 'paused' && (
+                  <button
+                    onClick={startQuiz}
+                    className="btn-primary"
+                  >
+                    ▶️ Resume Quiz
+                  </button>
+                )}
               </div>
-
-              {renderQuestion(currentQuestion)}
-
-              {error && (
-                <div className="text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg mt-4">
-                  {error}
-                </div>
-              )}
             </div>
 
-            {/* Navigation */}
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <div className="flex justify-between items-center">
-                <button
-                  onClick={handlePreviousQuestion}
-                  disabled={isFirstQuestion}
-                  className={`px-4 py-2 rounded-lg font-medium ${
-                    isFirstQuestion 
-                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed' 
-                      : 'bg-gray-200 text-gray-700 hover:bg-gray-300'
-                  }`}
-                >
-                  Previous
-                </button>
+            {/* Current Question */}
+            {currentQuestion && (
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900 mb-4">Current Question</h2>
+                {renderQuestion(currentQuestion)}
+              </div>
+            )}
 
-                <div className="flex items-center space-x-4">
-                  {showNextTimer && (
-                    <div className="text-center">
-                      <p className="text-sm text-gray-600">Moving to next question in:</p>
-                      <p className="text-2xl font-bold text-blue-600">{nextTimer}</p>
-                    </div>
-                  )}
-                  
+            {/* Question Navigation */}
+            {quizStatus === 'playing' && (
+              <div className="bg-white rounded-lg shadow-md p-6">
+                <h2 className="text-lg font-semibold text-gray-900 mb-4">Question Navigation</h2>
+                <div className="flex items-center justify-between">
                   <button
-                    onClick={handleNextQuestion}
-                    className={`px-6 py-2 rounded-lg font-medium ${
-                      isLastQuestion
-                        ? 'bg-green-600 text-white hover:bg-green-700'
+                    onClick={handlePreviousQuestion}
+                    disabled={currentQuestionIndex === 0}
+                    className={`px-4 py-2 rounded-lg font-medium ${
+                      currentQuestionIndex === 0
+                        ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
                         : 'bg-blue-600 text-white hover:bg-blue-700'
                     }`}
                   >
-                    {isLastQuestion ? 'Complete Quiz' : 'Next Question'}
+                    ← Previous Question
+                  </button>
+                  
+                  <div className="text-center">
+                    <div className="text-sm text-gray-600">Question Progress</div>
+                    <div className="text-lg font-semibold text-gray-900">
+                      {currentQuestionIndex + 1} / {questions.length}
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={handleNextQuestion}
+                    className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg font-medium"
+                  >
+                    {currentQuestionIndex >= questions.length - 1 ? 'Complete Quiz' : 'Next Question →'}
                   </button>
                 </div>
               </div>
-            </div>
+            )}
+
+            {/* Next Question Timer */}
+            {showNextTimer && (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-6 text-center">
+                <div className="text-2xl font-bold text-blue-600 mb-2">
+                  Moving to next question in {nextTimer}...
+                </div>
+                <div className="text-blue-600">All participants will see the next question automatically</div>
+              </div>
+            )}
           </div>
 
-          {/* Participants Panel */}
-          <div className="lg:col-span-1">
-            <div className="bg-white rounded-lg shadow-md p-6">
-              <h3 className="text-lg font-semibold text-gray-900 mb-4">Participants</h3>
-              <div className="space-y-3 max-h-96 overflow-y-auto">
-                {participants.length === 0 ? (
-                  <p className="text-gray-500 text-center">No participants yet</p>
-                ) : (
-                  participants.map((participant) => (
-                    <div key={participant.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
-                      <div>
-                        <p className="font-medium text-gray-900">{participant.name}</p>
-                        <p className="text-sm text-gray-600">
-                          {participant.status === PARTICIPANT_STATUS.WAITING && 'Waiting'}
-                          {participant.status === PARTICIPANT_STATUS.PLAYING && 'Playing'}
-                          {participant.status === PARTICIPANT_STATUS.COMPLETED && 'Completed'}
-                        </p>
+          {/* Participant Sidebar */}
+          {showParticipantList && (
+            <div className="bg-white rounded-lg shadow-md p-6 h-fit">
+              <h2 className="text-lg font-semibold text-gray-900 mb-4">Participants</h2>
+              
+              {/* Participant Stats */}
+              <div className="grid grid-cols-3 gap-2 mb-4">
+                <div className="text-center p-2 bg-yellow-50 rounded">
+                  <div className="text-lg font-bold text-yellow-600">{waitingParticipants}</div>
+                  <div className="text-xs text-yellow-600">Waiting</div>
+                </div>
+                <div className="text-center p-2 bg-green-50 rounded">
+                  <div className="text-lg font-bold text-green-600">{playingParticipants}</div>
+                  <div className="text-xs text-green-600">Playing</div>
+                </div>
+                <div className="text-center p-2 bg-blue-50 rounded">
+                  <div className="text-lg font-bold text-blue-600">{completedParticipants}</div>
+                  <div className="text-xs text-blue-600">Completed</div>
+                </div>
+              </div>
+
+              {/* Participant List */}
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {participants.map((participant) => (
+                  <div key={participant.id} className="flex items-center justify-between p-2 bg-gray-50 rounded">
+                    <div>
+                      <div className="font-medium text-gray-900">{participant.name}</div>
+                      <div className="text-xs text-gray-500">
+                        Joined: {new Date(participant.created_at).toLocaleTimeString()}
                       </div>
-                      <div className={`w-3 h-3 rounded-full ${
-                        participant.status === PARTICIPANT_STATUS.WAITING ? 'bg-yellow-400' :
-                        participant.status === PARTICIPANT_STATUS.PLAYING ? 'bg-blue-400' :
-                        'bg-green-400'
-                      }`}></div>
                     </div>
-                  ))
+                    <span className={`px-2 py-1 rounded-full text-xs font-medium ${getParticipantStatusColor(participant.status)}`}>
+                      {participant.status}
+                    </span>
+                  </div>
+                ))}
+                {participants.length === 0 && (
+                  <div className="text-center text-gray-500 py-4">
+                    No participants yet
+                  </div>
                 )}
               </div>
-              <div className="mt-4 pt-4 border-t border-gray-200">
-                <p className="text-sm text-gray-600">
-                  Total: {participants.length} participants
-                </p>
-              </div>
             </div>
-          </div>
+          )}
         </div>
+
+        {/* Error Messages */}
+        {error && (
+          <div className="mt-6 text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg">
+            {error}
+          </div>
+        )}
       </div>
     </div>
   )

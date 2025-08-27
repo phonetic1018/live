@@ -11,6 +11,7 @@ const Quiz = () => {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [quizCompleted, setQuizCompleted] = useState(false)
+  const [quizStatus, setQuizStatus] = useState('waiting')
   
   // Timer states
   const [totalTimeLeft, setTotalTimeLeft] = useState(null)
@@ -33,6 +34,7 @@ const Quiz = () => {
     
     setQuiz(quizObj)
     setParticipant(participantObj)
+    setQuizStatus(quizObj.status)
 
     // Fetch quiz questions
     fetchQuestions(quizObj.id)
@@ -47,7 +49,7 @@ const Quiz = () => {
 
   // Total quiz timer effect
   useEffect(() => {
-    if (totalTimeLeft !== null && totalTimeLeft > 0) {
+    if (totalTimeLeft !== null && totalTimeLeft > 0 && quizStatus === 'playing') {
       const timer = setInterval(() => {
         setTotalTimeLeft(prev => {
           if (prev <= 1) {
@@ -61,11 +63,11 @@ const Quiz = () => {
 
       return () => clearInterval(timer)
     }
-  }, [totalTimeLeft])
+  }, [totalTimeLeft, quizStatus])
 
   // Question timer effect
   useEffect(() => {
-    if (questionTimeLeft !== null && questionTimeLeft > 0) {
+    if (questionTimeLeft !== null && questionTimeLeft > 0 && quizStatus === 'playing') {
       const timer = setInterval(() => {
         setQuestionTimeLeft(prev => {
           if (prev <= 1) {
@@ -79,14 +81,14 @@ const Quiz = () => {
 
       return () => clearInterval(timer)
     }
-  }, [questionTimeLeft, currentQuestionIndex])
+  }, [questionTimeLeft, currentQuestionIndex, quizStatus])
 
   // Listen for admin-controlled question changes
   useEffect(() => {
     if (!quiz) return
 
     const quizSubscription = supabase
-      .channel('admin-quiz-control')
+      .channel('participant-quiz-control')
       .on('postgres_changes', 
         { 
           event: '*', 
@@ -96,20 +98,24 @@ const Quiz = () => {
         }, 
         (payload) => {
           console.log('Quiz change:', payload)
-          if (payload.new && payload.new.current_question_index !== undefined) {
-            const newQuestionIndex = payload.new.current_question_index
-            if (newQuestionIndex !== currentQuestionIndex) {
-              console.log(`Admin moved to question ${newQuestionIndex + 1}`)
-              setCurrentQuestionIndex(newQuestionIndex)
-              
-                             // Set timer for new question (use global timer from quiz)
-               if (questions[newQuestionIndex] && quiz.question_timer_seconds) {
-                 setQuestionTimeLeft(quiz.question_timer_seconds)
-                 setQuestionStartTime(new Date())
-               } else {
-                 setQuestionTimeLeft(null)
-                 setQuestionStartTime(null)
-               }
+          if (payload.new) {
+            setQuizStatus(payload.new.status)
+            
+            if (payload.new.current_question_index !== undefined) {
+              const newQuestionIndex = payload.new.current_question_index
+              if (newQuestionIndex !== currentQuestionIndex) {
+                console.log(`Admin moved to question ${newQuestionIndex + 1}`)
+                setCurrentQuestionIndex(newQuestionIndex)
+                
+                // Set timer for new question (use global timer from quiz)
+                if (questions[newQuestionIndex] && quiz.question_timer_seconds) {
+                  setQuestionTimeLeft(quiz.question_timer_seconds)
+                  setQuestionStartTime(new Date())
+                } else {
+                  setQuestionTimeLeft(null)
+                  setQuestionStartTime(null)
+                }
+              }
             }
           }
         }
@@ -196,38 +202,6 @@ const Quiz = () => {
     }))
   }
 
-  const handleNextQuestion = () => {
-    if (currentQuestionIndex < questions.length - 1) {
-      setCurrentQuestionIndex(prev => prev + 1)
-      
-      // Set timer for next question (use global timer from quiz)
-      const nextQuestion = questions[currentQuestionIndex + 1]
-      if (nextQuestion && quiz.question_timer_seconds) {
-        setQuestionTimeLeft(quiz.question_timer_seconds)
-        setQuestionStartTime(new Date())
-      } else {
-        setQuestionTimeLeft(null)
-        setQuestionStartTime(null)
-      }
-    }
-  }
-
-  const handlePreviousQuestion = () => {
-    if (currentQuestionIndex > 0) {
-      setCurrentQuestionIndex(prev => prev - 1)
-      
-      // Set timer for previous question (use global timer from quiz)
-      const prevQuestion = questions[currentQuestionIndex - 1]
-      if (prevQuestion && quiz.question_timer_seconds) {
-        setQuestionTimeLeft(quiz.question_timer_seconds)
-        setQuestionStartTime(new Date())
-      } else {
-        setQuestionTimeLeft(null)
-        setQuestionStartTime(null)
-      }
-    }
-  }
-
   const handleSubmitQuiz = async () => {
     try {
       // Calculate time taken for each answer
@@ -290,7 +264,7 @@ const Quiz = () => {
         return (
           <div className="space-y-3">
             {question.options?.map((option, index) => (
-              <label key={index} className="flex items-center space-x-3 cursor-pointer">
+              <label key={index} className="flex items-center space-x-3 cursor-pointer p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
                 <input
                   type="radio"
                   name={`question-${question.id}`}
@@ -299,7 +273,7 @@ const Quiz = () => {
                   onChange={(e) => handleAnswerChange(question.id, e.target.value)}
                   className="text-blue-600 focus:ring-blue-500"
                 />
-                <span className="text-gray-700">{option}</span>
+                <span className="text-gray-700 flex-1">{option}</span>
               </label>
             ))}
           </div>
@@ -309,7 +283,7 @@ const Quiz = () => {
         return (
           <div className="space-y-3">
             {['True', 'False'].map((option) => (
-              <label key={option} className="flex items-center space-x-3 cursor-pointer">
+              <label key={option} className="flex items-center space-x-3 cursor-pointer p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
                 <input
                   type="radio"
                   name={`question-${question.id}`}
@@ -318,7 +292,7 @@ const Quiz = () => {
                   onChange={(e) => handleAnswerChange(question.id, e.target.value)}
                   className="text-blue-600 focus:ring-blue-500"
                 />
-                <span className="text-gray-700">{option}</span>
+                <span className="text-gray-700 flex-1">{option}</span>
               </label>
             ))}
           </div>
@@ -411,8 +385,6 @@ const Quiz = () => {
   }
 
   const currentQuestion = questions[currentQuestionIndex]
-  const isFirstQuestion = currentQuestionIndex === 0
-  const isLastQuestion = currentQuestionIndex === questions.length - 1
   const hasAnsweredCurrent = answers[currentQuestion.id]
 
   return (
@@ -437,84 +409,112 @@ const Quiz = () => {
           </div>
         </div>
 
+        {/* Quiz Status */}
+        {quizStatus === 'waiting' && (
+          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-6 mb-6 text-center">
+            <div className="text-yellow-800">
+              <h2 className="text-xl font-semibold mb-2">Waiting for Admin</h2>
+              <p>The admin will start the quiz soon. Please wait...</p>
+            </div>
+          </div>
+        )}
+
         {/* Progress Bar and Timers */}
-        <div className="bg-white rounded-lg shadow-md p-6 mb-6">
-          <div className="flex justify-between items-center mb-4">
-            <span className="text-sm text-gray-600">Progress</span>
-            <span className="text-sm font-medium text-gray-900">
-              {Object.keys(answers).length} / {questions.length} answered
-            </span>
-          </div>
-          <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
-            <div 
-              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-              style={{ width: `${(Object.keys(answers).length / questions.length) * 100}%` }}
-            ></div>
-          </div>
-          
-          {/* Timer Display */}
-          <div className="flex justify-between items-center">
-            {totalTimeLeft !== null && (
-              <div className="flex items-center space-x-2">
-                <span className="text-sm text-gray-600">Total Time:</span>
-                <span className={`text-lg font-bold ${totalTimeLeft <= 60 ? 'text-red-600' : 'text-blue-600'}`}>
-                  {formatTime(totalTimeLeft)}
-                </span>
-              </div>
-            )}
+        {quizStatus === 'playing' && (
+          <div className="bg-white rounded-lg shadow-md p-6 mb-6">
+            <div className="flex justify-between items-center mb-4">
+              <span className="text-sm text-gray-600">Progress</span>
+              <span className="text-sm font-medium text-gray-900">
+                {Object.keys(answers).length} / {questions.length} answered
+              </span>
+            </div>
+            <div className="w-full bg-gray-200 rounded-full h-2 mb-4">
+              <div 
+                className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                style={{ width: `${(Object.keys(answers).length / questions.length) * 100}%` }}
+              ></div>
+            </div>
             
-            {questionTimeLeft !== null && (
-              <div className="flex items-center space-x-2">
-                <span className="text-sm text-gray-600">Question Time:</span>
-                <span className={`text-lg font-bold ${questionTimeLeft <= 10 ? 'text-red-600' : 'text-green-600'}`}>
-                  {formatTime(questionTimeLeft)}
-                </span>
-              </div>
-            )}
+            {/* Timer Display */}
+            <div className="flex justify-between items-center">
+              {totalTimeLeft !== null && (
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm text-gray-600">Total Time:</span>
+                  <span className={`text-lg font-bold ${totalTimeLeft <= 60 ? 'text-red-600' : 'text-blue-600'}`}>
+                    {formatTime(totalTimeLeft)}
+                  </span>
+                </div>
+              )}
+              
+              {questionTimeLeft !== null && (
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm text-gray-600">Question Time:</span>
+                  <span className={`text-lg font-bold ${questionTimeLeft <= 10 ? 'text-red-600' : 'text-green-600'}`}>
+                    {formatTime(questionTimeLeft)}
+                  </span>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Question */}
-        <div className="bg-white rounded-lg shadow-md p-8 mb-6">
-          <div className="mb-6">
-            <h2 className="text-xl font-semibold text-gray-900 mb-4">
-              {currentQuestion.question}
-            </h2>
-            <div className="text-sm text-gray-500 mb-4">
-              Type: {currentQuestion.type.replace('_', ' ').toUpperCase()}
+        {quizStatus === 'playing' && currentQuestion && (
+          <div className="bg-white rounded-lg shadow-md p-8 mb-6">
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-semibold text-gray-900">
+                  {currentQuestion.question}
+                </h2>
+                <div className="flex items-center space-x-2">
+                  <span className={`px-2 py-1 text-xs rounded-full ${
+                    currentQuestion.difficulty === 'easy' ? 'bg-green-100 text-green-800' :
+                    currentQuestion.difficulty === 'medium' ? 'bg-yellow-100 text-yellow-800' :
+                    'bg-red-100 text-red-800'
+                  }`}>
+                    {currentQuestion.difficulty}
+                  </span>
+                  <span className="text-sm text-gray-500">{currentQuestion.points} points</span>
+                </div>
+              </div>
+              <div className="text-sm text-gray-500 mb-4">
+                Type: {currentQuestion.type.replace('_', ' ').toUpperCase()}
+              </div>
             </div>
+
+            {renderQuestion(currentQuestion)}
+
+            {error && (
+              <div className="text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg mt-4">
+                {error}
+              </div>
+            )}
           </div>
-
-          {renderQuestion(currentQuestion)}
-
-          {error && (
-            <div className="text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg mt-4">
-              {error}
-            </div>
-          )}
-        </div>
+        )}
 
         {/* Admin Controlled Navigation */}
-        <div className="bg-white rounded-lg shadow-md p-6">
-          <div className="text-center">
-            <p className="text-gray-600 mb-4">
-              The admin controls when to move to the next question.
-            </p>
-            <div className="flex justify-center space-x-4">
-              <button
-                onClick={handleSubmitQuiz}
-                disabled={Object.keys(answers).length < questions.length}
-                className={`px-6 py-2 rounded-lg font-medium ${
-                  Object.keys(answers).length < questions.length
-                    ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                    : 'bg-green-600 text-white hover:bg-green-700'
-                }`}
-              >
-                Submit Quiz
-              </button>
+        {quizStatus === 'playing' && (
+          <div className="bg-white rounded-lg shadow-md p-6">
+            <div className="text-center">
+              <p className="text-gray-600 mb-4">
+                The admin controls when to move to the next question.
+              </p>
+              <div className="flex justify-center space-x-4">
+                <button
+                  onClick={handleSubmitQuiz}
+                  disabled={Object.keys(answers).length < questions.length}
+                  className={`px-6 py-2 rounded-lg font-medium ${
+                    Object.keys(answers).length < questions.length
+                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                      : 'bg-green-600 text-white hover:bg-green-700'
+                  }`}
+                >
+                  Submit Quiz
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </div>
   )
