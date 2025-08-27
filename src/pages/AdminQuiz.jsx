@@ -13,6 +13,7 @@ const AdminQuiz = () => {
   const [nextTimer, setNextTimer] = useState(3)
   const [quizStatus, setQuizStatus] = useState('waiting')
   const [showParticipantList, setShowParticipantList] = useState(true)
+  const [optionCounts, setOptionCounts] = useState({})
 
   useEffect(() => {
     // Check if admin is authenticated
@@ -78,6 +79,8 @@ const AdminQuiz = () => {
           if (payload.new) {
             setQuizStatus(payload.new.status)
             setCurrentQuestionIndex(payload.new.current_question_index || 0)
+            // Reset option counts when question changes
+            setOptionCounts({})
           }
         }
       )
@@ -87,6 +90,38 @@ const AdminQuiz = () => {
       quizSubscription.unsubscribe()
     }
   }, [quiz])
+
+  // Subscribe to answer updates
+  useEffect(() => {
+    if (!quiz || !questions[currentQuestionIndex]) return
+
+    const currentQuestion = questions[currentQuestionIndex]
+    console.log('Setting up answer subscription for question:', currentQuestion.id)
+
+    const answerSubscription = supabase
+      .channel('admin-answers')
+      .on('postgres_changes', 
+        { 
+          event: '*', 
+          schema: 'public', 
+          table: TABLES.ANSWERS,
+          filter: `question_id=eq.${currentQuestion.id}`
+        }, 
+        (payload) => {
+          console.log('Answer change:', payload)
+          // Refresh option counts when new answers are submitted
+          fetchOptionCounts(currentQuestion.id)
+        }
+      )
+      .subscribe()
+
+    // Initial fetch of option counts
+    fetchOptionCounts(currentQuestion.id)
+
+    return () => {
+      answerSubscription.unsubscribe()
+    }
+  }, [quiz, currentQuestionIndex, questions])
 
   const fetchQuestions = async (quizId) => {
     try {
@@ -128,6 +163,34 @@ const AdminQuiz = () => {
       setParticipants(data || [])
     } catch (error) {
       console.error('Error fetching participants:', error)
+    }
+  }
+
+  const fetchOptionCounts = async (questionId) => {
+    if (!questionId) return
+
+    try {
+      const { data, error } = await supabase
+        .from(TABLES.ANSWERS)
+        .select('answer')
+        .eq('question_id', questionId)
+
+      if (error) {
+        console.error('Error fetching option counts:', error)
+        return
+      }
+
+      // Count occurrences of each answer
+      const counts = {}
+      data.forEach(item => {
+        const answer = item.answer
+        counts[answer] = (counts[answer] || 0) + 1
+      })
+
+      setOptionCounts(counts)
+      console.log('Option counts:', counts)
+    } catch (error) {
+      console.error('Error in fetchOptionCounts:', error)
     }
   }
 
@@ -321,10 +384,16 @@ const AdminQuiz = () => {
                 {question.options.map((option, index) => (
                   <div key={index} className="flex items-center p-3 border rounded-lg">
                     <span className="text-sm text-gray-600 mr-3">{String.fromCharCode(65 + index)}.</span>
-                    <span className="text-gray-900">{option}</span>
-                    {option === question.correct_answer && (
-                      <span className="ml-auto text-green-600 text-sm font-medium">✓ Correct</span>
-                    )}
+                    <span className="text-gray-900 flex-1">{option}</span>
+                    <div className="flex items-center space-x-3">
+                      {/* Option Count */}
+                      <div className="text-sm text-gray-500">
+                        {optionCounts[option] || 0} votes
+                      </div>
+                      {option === question.correct_answer && (
+                        <span className="text-green-600 text-sm font-medium">✓ Correct</span>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
@@ -333,9 +402,22 @@ const AdminQuiz = () => {
 
           {question.type === 'true_false' && (
             <div>
-              <p className="text-sm font-medium text-gray-700 mb-2">Correct Answer:</p>
-              <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
-                <span className="text-green-800 font-medium">{question.correct_answer}</span>
+              <p className="text-sm font-medium text-gray-700 mb-2">Options:</p>
+              <div className="space-y-2">
+                {['True', 'False'].map((option) => (
+                  <div key={option} className="flex items-center p-3 border rounded-lg">
+                    <span className="text-gray-900 flex-1">{option}</span>
+                    <div className="flex items-center space-x-3">
+                      {/* Option Count */}
+                      <div className="text-sm text-gray-500">
+                        {optionCounts[option] || 0} votes
+                      </div>
+                      {option === question.correct_answer && (
+                        <span className="text-green-600 text-sm font-medium">✓ Correct</span>
+                      )}
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           )}
@@ -345,6 +427,56 @@ const AdminQuiz = () => {
               <p className="text-sm font-medium text-gray-700 mb-2">Correct Answer:</p>
               <div className="p-3 bg-green-50 border border-green-200 rounded-lg">
                 <span className="text-green-800 font-medium">{question.correct_answer}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Option Counts Summary */}
+          {(question.type === 'mcq' || question.type === 'true_false') && (
+            <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+              <div className="flex justify-between items-center mb-3">
+                <h4 className="text-sm font-medium text-gray-700">Response Summary:</h4>
+                <button
+                  onClick={() => fetchOptionCounts(question.id)}
+                  className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded hover:bg-blue-200 transition-colors"
+                >
+                  Refresh
+                </button>
+              </div>
+              <div className="space-y-2">
+                {(question.type === 'mcq' ? question.options : ['True', 'False']).map((option, index) => {
+                  const count = optionCounts[option] || 0
+                  const totalResponses = Object.values(optionCounts).reduce((sum, val) => sum + val, 0)
+                  const percentage = totalResponses > 0 ? Math.round((count / totalResponses) * 100) : 0
+                  
+                  return (
+                    <div key={index} className="flex items-center justify-between">
+                      <div className="flex items-center space-x-2">
+                        <span className="text-sm text-gray-600">
+                          {question.type === 'mcq' ? String.fromCharCode(65 + index) + '.' : ''} {option}
+                        </span>
+                        {option === question.correct_answer && (
+                          <span className="text-green-600 text-xs">✓</span>
+                        )}
+                      </div>
+                      <div className="flex items-center space-x-3">
+                        <div className="text-sm text-gray-500">
+                          {count} votes ({percentage}%)
+                        </div>
+                        {/* Progress bar */}
+                        <div className="w-20 bg-gray-200 rounded-full h-2">
+                          <div 
+                            className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                            style={{ width: `${percentage}%` }}
+                          ></div>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+                <div className="text-xs text-gray-500 mt-2">
+                  Total responses: {Object.values(optionCounts).reduce((sum, val) => sum + val, 0)}
+                </div>
               </div>
             </div>
           )}

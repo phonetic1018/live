@@ -42,6 +42,7 @@ const Quiz = () => {
   // Submit and wait states
   const [showWaitScreen, setShowWaitScreen] = useState(false)
   const [submittedAnswers, setSubmittedAnswers] = useState({})
+  const [questionTimedOut, setQuestionTimedOut] = useState(false)
 
   useEffect(() => {
     // Get quiz and participant info from session storage
@@ -103,7 +104,7 @@ const Quiz = () => {
       const timer = setInterval(() => {
         setQuestionTimeLeft(prev => {
           if (prev <= 1) {
-            // Question time's up! Move to next question
+            // Question time's up! Show feedback but don't move to next question
             handleQuestionTimeout()
             return 0
           }
@@ -135,31 +136,33 @@ const Quiz = () => {
             // Update quiz status
             setQuizStatus(payload.new.status)
             
-            // Update current question index if available
-            if (payload.new.current_question_index !== undefined) {
-              console.log('Quiz component - Updating question index to:', payload.new.current_question_index)
-              // Show question switching timer
-              if (payload.new.current_question_index !== currentQuestionIndex) {
-                setShowQuestionTimer(true)
-                setQuestionTimer(3)
-                
-                const countdown = setInterval(() => {
-                  setQuestionTimer(prev => {
-                    if (prev <= 1) {
-                      clearInterval(countdown)
-                      setShowQuestionTimer(false)
-                      setCurrentQuestionIndex(payload.new.current_question_index)
-                      initializeQuestionTimer()
-                      // Reset submitted answers for new question
-                      setSubmittedAnswers({})
-                      setShowWaitScreen(false)
-                      return 3
-                    }
-                    return prev - 1
-                  })
-                }, 1000)
-              }
-            }
+                         // Update current question index if available
+             if (payload.new.current_question_index !== undefined) {
+               console.log('Quiz component - Updating question index to:', payload.new.current_question_index)
+               // Show question switching timer
+               if (payload.new.current_question_index !== currentQuestionIndex) {
+                 setShowQuestionTimer(true)
+                 setQuestionTimer(3)
+                 
+                 const countdown = setInterval(() => {
+                   setQuestionTimer(prev => {
+                     if (prev <= 1) {
+                       clearInterval(countdown)
+                       setShowQuestionTimer(false)
+                       setCurrentQuestionIndex(payload.new.current_question_index)
+                       initializeQuestionTimer()
+                       // Reset submitted answers for new question
+                       setSubmittedAnswers({})
+                       setShowWaitScreen(false)
+                       // Reset timed out state for new question
+                       setQuestionTimedOut(false)
+                       return 3
+                     }
+                     return prev - 1
+                   })
+                 }, 1000)
+               }
+             }
           }
         }
       )
@@ -198,6 +201,9 @@ const Quiz = () => {
   const handleQuestionTimeout = () => {
     // Hide wait screen first
     setShowWaitScreen(false)
+    
+    // Mark question as timed out
+    setQuestionTimedOut(true)
     
     // Auto-save current answer if any
     const currentQuestion = questions[currentQuestionIndex]
@@ -247,26 +253,11 @@ const Quiz = () => {
     })
     setShowFeedback(true)
     
-    // Hide feedback after 3 seconds and move to next question
+    // Hide feedback after 3 seconds but DON'T move to next question
+    // Let the admin control the progression
     setTimeout(() => {
       setShowFeedback(false)
-      
-      // Move to next question or complete quiz
-      if (currentQuestionIndex < questions.length - 1) {
-        setCurrentQuestionIndex(prev => prev + 1)
-        // Set timer for next question (use global timer from quiz)
-        const nextQuestion = questions[currentQuestionIndex + 1]
-        if (nextQuestion && quiz.question_timer_seconds) {
-          setQuestionTimeLeft(quiz.question_timer_seconds)
-          setQuestionStartTime(new Date())
-        } else {
-          setQuestionTimeLeft(null)
-          setQuestionStartTime(null)
-        }
-      } else {
-        // Last question, complete quiz
-        handleSubmitQuiz()
-      }
+      // Don't automatically move to next question - wait for admin control
     }, 3000)
   }
 
@@ -359,11 +350,13 @@ const Quiz = () => {
           setQuizStatus(data.status)
         }
         
-        // Update current question index if available
-        if (data.current_question_index !== undefined && data.current_question_index !== currentQuestionIndex) {
-          console.log('Quiz component - Updating question index from DB:', data.current_question_index)
-          setCurrentQuestionIndex(data.current_question_index)
-        }
+                 // Update current question index if available
+         if (data.current_question_index !== undefined && data.current_question_index !== currentQuestionIndex) {
+           console.log('Quiz component - Updating question index from DB:', data.current_question_index)
+           setCurrentQuestionIndex(data.current_question_index)
+           // Reset timed out state when question index changes
+           setQuestionTimedOut(false)
+         }
         
         // If quiz is still waiting, redirect back to lobby
         if (data.status === 'waiting') {
@@ -507,16 +500,21 @@ const Quiz = () => {
         return (
           <div className="space-y-3">
             {question.options?.map((option, index) => (
-              <label key={index} className="flex items-center space-x-3 cursor-pointer p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+              <label key={index} className={`flex items-center space-x-3 p-3 rounded-lg transition-colors ${
+                questionTimedOut 
+                  ? 'bg-gray-100 cursor-not-allowed' 
+                  : 'cursor-pointer bg-gray-50 hover:bg-gray-100'
+              }`}>
                 <input
                   type="radio"
                   name={`question-${question.id}`}
                   value={option}
                   checked={currentAnswer === option}
                   onChange={(e) => handleAnswerChange(question.id, e.target.value)}
+                  disabled={questionTimedOut}
                   className="text-blue-600 focus:ring-blue-500"
                 />
-                <span className="text-gray-700 flex-1">{option}</span>
+                <span className={`flex-1 ${questionTimedOut ? 'text-gray-500' : 'text-gray-700'}`}>{option}</span>
               </label>
             ))}
           </div>
@@ -526,16 +524,21 @@ const Quiz = () => {
         return (
           <div className="space-y-3">
             {['True', 'False'].map((option) => (
-              <label key={option} className="flex items-center space-x-3 cursor-pointer p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
+              <label key={option} className={`flex items-center space-x-3 p-3 rounded-lg transition-colors ${
+                questionTimedOut 
+                  ? 'bg-gray-100 cursor-not-allowed' 
+                  : 'cursor-pointer bg-gray-50 hover:bg-gray-100'
+              }`}>
                 <input
                   type="radio"
                   name={`question-${question.id}`}
                   value={option}
                   checked={currentAnswer === option}
                   onChange={(e) => handleAnswerChange(question.id, e.target.value)}
+                  disabled={questionTimedOut}
                   className="text-blue-600 focus:ring-blue-500"
                 />
-                <span className="text-gray-700 flex-1">{option}</span>
+                <span className={`flex-1 ${questionTimedOut ? 'text-gray-500' : 'text-gray-700'}`}>{option}</span>
               </label>
             ))}
           </div>
@@ -546,8 +549,13 @@ const Quiz = () => {
           <textarea
             value={currentAnswer}
             onChange={(e) => handleAnswerChange(question.id, e.target.value)}
-            placeholder="Type your answer here..."
-            className="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none"
+            placeholder={questionTimedOut ? "Time's up - answers disabled" : "Type your answer here..."}
+            disabled={questionTimedOut}
+            className={`w-full p-3 border rounded-lg resize-none ${
+              questionTimedOut 
+                ? 'border-gray-200 bg-gray-100 text-gray-500 cursor-not-allowed' 
+                : 'border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-transparent'
+            }`}
             rows={4}
           />
         )
@@ -853,8 +861,14 @@ const Quiz = () => {
                  {questionTimeLeft !== null && (
                    <div className="flex items-center space-x-2">
                      <span className="text-sm text-gray-600">Question Time:</span>
-                     <span className={`text-lg font-bold ${questionTimeLeft <= 10 ? 'text-red-600' : 'text-green-600'}`}>
-                       {formatTime(questionTimeLeft)}
+                     <span className={`text-lg font-bold ${
+                       questionTimedOut 
+                         ? 'text-red-600' 
+                         : questionTimeLeft <= 10 
+                           ? 'text-red-600' 
+                           : 'text-green-600'
+                     }`}>
+                       {questionTimedOut ? '00:00' : formatTime(questionTimeLeft)}
                      </span>
                    </div>
                  )}
@@ -863,9 +877,19 @@ const Quiz = () => {
            </div>
          )}
 
-                 {/* Question */}
-         {quizStatus === 'playing' && currentQuestion && (
-           <div className="bg-white rounded-lg shadow-md p-8 mb-6">
+                                   {/* Question */}
+          {quizStatus === 'playing' && currentQuestion && (
+            <div className="bg-white rounded-lg shadow-md p-8 mb-6">
+              {questionTimedOut && (
+                <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
+                  <div className="flex items-center space-x-2">
+                    <svg className="w-5 h-5 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <span className="text-red-800 font-medium">Time's up! Waiting for the instructor to move to the next question.</span>
+                  </div>
+                </div>
+              )}
              {/* Debug Info */}
              <div className="mb-4 p-3 bg-gray-100 rounded text-xs">
                <strong>Debug Info:</strong> Type: {currentQuestion.type} | 
@@ -897,20 +921,32 @@ const Quiz = () => {
 
                          {renderQuestion(currentQuestion)}
 
-                           {/* Submit Answer Button */}
-              <div className="mt-6 text-center">
-                <button
-                  onClick={() => handleAnswerSubmit(currentQuestion.id)}
-                  disabled={!answers[currentQuestion.id] || submittedAnswers[currentQuestion.id]}
-                  className={`px-6 py-3 rounded-lg font-medium ${
-                    !answers[currentQuestion.id] || submittedAnswers[currentQuestion.id]
-                      ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
-                      : 'bg-blue-600 text-white hover:bg-blue-700'
-                  }`}
-                >
-                  {submittedAnswers[currentQuestion.id] ? 'Answer Submitted' : 'Submit Answer'}
-                </button>
-              </div>
+                                                       {/* Submit Answer Button */}
+               <div className="mt-6 text-center">
+                 {questionTimedOut ? (
+                   <div className="text-center">
+                     <div className="text-red-600 font-medium mb-2">Time's up! Waiting for next question...</div>
+                     <button
+                       disabled={true}
+                       className="bg-gray-100 text-gray-400 cursor-not-allowed px-6 py-3 rounded-lg font-medium"
+                     >
+                       Time Expired
+                     </button>
+                   </div>
+                 ) : (
+                   <button
+                     onClick={() => handleAnswerSubmit(currentQuestion.id)}
+                     disabled={!answers[currentQuestion.id] || submittedAnswers[currentQuestion.id]}
+                     className={`px-6 py-3 rounded-lg font-medium ${
+                       !answers[currentQuestion.id] || submittedAnswers[currentQuestion.id]
+                         ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+                         : 'bg-blue-600 text-white hover:bg-blue-700'
+                     }`}
+                   >
+                     {submittedAnswers[currentQuestion.id] ? 'Answer Submitted' : 'Submit Answer'}
+                   </button>
+                 )}
+               </div>
 
              {error && (
                <div className="text-red-600 text-sm text-center bg-red-50 p-3 rounded-lg mt-4">
