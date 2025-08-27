@@ -1,9 +1,17 @@
 import React, { useState, useEffect } from 'react'
+import { supabase, TABLES, QUIZ_STATUS, PARTICIPANT_STATUS } from '../utils/supabaseClient'
 import logo from '../assets/logo.png'
 
 const AdminDashboard = () => {
   const [adminUsername, setAdminUsername] = useState('')
   const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [quizzes, setQuizzes] = useState([])
+  const [stats, setStats] = useState({
+    activeQuizzes: 0,
+    totalParticipants: 0,
+    completedQuizzes: 0
+  })
+  const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     // Check if admin is authenticated
@@ -13,11 +21,56 @@ const AdminDashboard = () => {
     if (adminAuth === 'true' && username) {
       setIsAuthenticated(true)
       setAdminUsername(username)
+      fetchDashboardData()
     } else {
       // Redirect to admin login if not authenticated
       window.location.href = '/admin/login'
     }
   }, [])
+
+  const fetchDashboardData = async () => {
+    try {
+      setLoading(true)
+      
+      // Fetch all quizzes
+      const { data: quizzesData, error: quizzesError } = await supabase
+        .from(TABLES.QUIZZES)
+        .select('*')
+        .order('created_at', { ascending: false })
+
+      if (quizzesError) {
+        console.error('Error fetching quizzes:', quizzesError)
+        return
+      }
+
+      setQuizzes(quizzesData || [])
+
+      // Fetch statistics
+      const { data: participantsData, error: participantsError } = await supabase
+        .from(TABLES.PARTICIPANTS)
+        .select('*')
+
+      if (participantsError) {
+        console.error('Error fetching participants:', participantsError)
+        return
+      }
+
+      const activeQuizzes = quizzesData?.filter(q => q.status === QUIZ_STATUS.WAITING || q.status === QUIZ_STATUS.PLAYING).length || 0
+      const completedQuizzes = quizzesData?.filter(q => q.status === QUIZ_STATUS.COMPLETED).length || 0
+      const totalParticipants = participantsData?.length || 0
+
+      setStats({
+        activeQuizzes,
+        totalParticipants,
+        completedQuizzes
+      })
+
+    } catch (error) {
+      console.error('Error fetching dashboard data:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
 
   const handleLogout = () => {
     sessionStorage.removeItem('adminAuthenticated')
@@ -27,6 +80,56 @@ const AdminDashboard = () => {
 
   const navigateTo = (path) => {
     window.location.href = path
+  }
+
+  const handleCreateQuiz = () => {
+    // Generate a random access code
+    const accessCode = Math.random().toString(36).substring(2, 8).toUpperCase()
+    
+    // Store the access code for the create quiz page
+    sessionStorage.setItem('newQuizAccessCode', accessCode)
+    navigateTo('/admin/create-quiz')
+  }
+
+  const startQuiz = async (quizId) => {
+    try {
+      // Update quiz status to PLAYING
+      const { error: quizError } = await supabase
+        .from(TABLES.QUIZZES)
+        .update({ status: QUIZ_STATUS.PLAYING })
+        .eq('id', quizId)
+
+      if (quizError) {
+        console.error('Error starting quiz:', quizError)
+        alert('Failed to start quiz. Please try again.')
+        return
+      }
+
+      // Update all participants in this quiz to PLAYING status
+      const { error: participantsError } = await supabase
+        .from(TABLES.PARTICIPANTS)
+        .update({ status: PARTICIPANT_STATUS.PLAYING })
+        .eq('quiz_id', quizId)
+
+      if (participantsError) {
+        console.error('Error updating participants:', participantsError)
+        // Don't return here as the quiz was already started
+      }
+
+      // Refresh dashboard data
+      await fetchDashboardData()
+      
+      alert('Quiz started successfully! All participants can now begin the quiz.')
+      
+    } catch (error) {
+      console.error('Error starting quiz:', error)
+      alert('Failed to start quiz. Please try again.')
+    }
+  }
+
+  const joinQuiz = (quiz) => {
+    sessionStorage.setItem('currentQuiz', JSON.stringify(quiz))
+    window.location.href = '/lobby'
   }
 
   if (!isAuthenticated) {
@@ -67,7 +170,7 @@ const AdminDashboard = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {/* Create Quiz */}
           <div className="bg-white rounded-lg shadow-md p-6 hover:shadow-lg transition-shadow cursor-pointer"
-               onClick={() => navigateTo('/admin/create-quiz')}>
+               onClick={handleCreateQuiz}>
             <div className="text-center">
               <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
                 <svg className="w-8 h-8 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -113,19 +216,60 @@ const AdminDashboard = () => {
           <h2 className="text-2xl font-bold text-gray-900 mb-4">Quick Stats</h2>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="text-center">
-              <div className="text-3xl font-bold text-blue-600 mb-2">0</div>
+              <div className="text-3xl font-bold text-blue-600 mb-2">{stats.activeQuizzes}</div>
               <div className="text-gray-600">Active Quizzes</div>
             </div>
             <div className="text-center">
-              <div className="text-3xl font-bold text-green-600 mb-2">0</div>
+              <div className="text-3xl font-bold text-green-600 mb-2">{stats.totalParticipants}</div>
               <div className="text-gray-600">Total Participants</div>
             </div>
             <div className="text-center">
-              <div className="text-3xl font-bold text-purple-600 mb-2">0</div>
+              <div className="text-3xl font-bold text-purple-600 mb-2">{stats.completedQuizzes}</div>
               <div className="text-gray-600">Completed Quizzes</div>
             </div>
           </div>
         </div>
+
+        {/* Recent Quizzes */}
+        {quizzes.length > 0 && (
+          <div className="mt-8 bg-white rounded-lg shadow-md p-6">
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">Recent Quizzes</h2>
+            <div className="space-y-4">
+              {quizzes.slice(0, 5).map((quiz) => (
+                <div key={quiz.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg">
+                  <div>
+                    <h3 className="font-semibold text-gray-900">{quiz.title}</h3>
+                    <p className="text-sm text-gray-600">Code: {quiz.access_code}</p>
+                    <p className="text-xs text-gray-500">Created: {new Date(quiz.created_at).toLocaleDateString()}</p>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                      quiz.status === QUIZ_STATUS.WAITING ? 'bg-yellow-100 text-yellow-800' :
+                      quiz.status === QUIZ_STATUS.PLAYING ? 'bg-blue-100 text-blue-800' :
+                      'bg-green-100 text-green-800'
+                    }`}>
+                      {quiz.status}
+                    </span>
+                    {quiz.status === QUIZ_STATUS.WAITING && (
+                      <button
+                        onClick={() => startQuiz(quiz.id)}
+                        className="btn-outline text-sm"
+                      >
+                        Start Quiz
+                      </button>
+                    )}
+                    <button
+                      onClick={() => joinQuiz(quiz)}
+                      className="btn-outline text-sm"
+                    >
+                      Join
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Back to Home */}
         <div className="mt-6 text-center">

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { supabase, TABLES, PARTICIPANT_STATUS } from '../utils/supabaseClient'
 import logo from '../assets/logo.png'
 
 const EnterName = () => {
@@ -29,18 +30,33 @@ const EnterName = () => {
     }
 
     try {
-      // Store participant info in session storage
-      const participant = {
-        id: Date.now(),
-        name: participantName.trim(),
-        quiz_id: quiz.id,
-        status: 'waiting'
+      // Save participant to Supabase
+      const { data: participant, error: participantError } = await supabase
+        .from(TABLES.PARTICIPANTS)
+        .insert([
+          {
+            quiz_id: quiz.id,
+            name: participantName.trim(),
+            status: PARTICIPANT_STATUS.WAITING
+          }
+        ])
+        .select()
+        .single()
+
+      if (participantError) {
+        console.error('Error creating participant:', participantError)
+        setError('Failed to join quiz. Please try again.')
+        setLoading(false)
+        return
       }
+
+      // Store participant info in session storage
       sessionStorage.setItem('currentParticipant', JSON.stringify(participant))
       
       // Navigate to lobby
       window.location.href = '/lobby'
     } catch (err) {
+      console.error('Error in handleSubmit:', err)
       setError('Something went wrong. Please try again.')
     } finally {
       setLoading(false)
@@ -69,6 +85,7 @@ const EnterName = () => {
 
         <div className="text-center mb-8">
           <h1 className="text-3xl font-bold text-gray-900 mb-2">Enter Your Name</h1>
+          <p className="text-gray-600">Join quiz: {quiz.title}</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6">
