@@ -93,6 +93,12 @@ const CreateQuiz = () => {
     setQuestions(updatedQuestions)
   }
 
+  const handleCorrectAnswerChange = (questionIndex, optionValue) => {
+    const updatedQuestions = [...questions]
+    updatedQuestions[questionIndex].correctAnswer = optionValue
+    setQuestions(updatedQuestions)
+  }
+
   const handleSubmit = async (e) => {
     e.preventDefault()
     setLoading(true)
@@ -114,6 +120,15 @@ const CreateQuiz = () => {
 
     if (questions.some(q => !q.text.trim())) {
       setError('Please fill in all question texts')
+      setLoading(false)
+      return
+    }
+
+    // Validate that MCQ questions have correct answers selected
+    const mcqQuestions = questions.filter(q => q.type === QUESTION_TYPES.MCQ)
+    const invalidMcqQuestions = mcqQuestions.filter(q => !q.correctAnswer.trim())
+    if (invalidMcqQuestions.length > 0) {
+      setError('Please select correct answers for all multiple choice questions')
       setLoading(false)
       return
     }
@@ -228,6 +243,7 @@ const CreateQuiz = () => {
               </div>
               <div>
                 <h1 className="text-3xl font-bold text-gray-900">Create Quiz</h1>
+                <p className="text-gray-600">Build engaging quizzes like FlexiQuiz</p>
               </div>
             </div>
           </div>
@@ -433,25 +449,31 @@ const CreateQuiz = () => {
                           <label className="block text-sm font-medium text-gray-700 mb-2">
                             Correct Answer *
                           </label>
-                          <input
-                            type="text"
-                            value={question.correctAnswer}
-                            onChange={(e) => updateQuestion(index, 'correctAnswer', e.target.value)}
-                            placeholder="Enter correct answer"
-                            className="input-field"
-                            required
-                          />
+                          {question.type === QUESTION_TYPES.MCQ ? (
+                            <div className="text-sm text-gray-600 p-2 bg-blue-50 rounded">
+                              Select the correct answer from the options below using the checkboxes
+                            </div>
+                          ) : (
+                            <input
+                              type="text"
+                              value={question.correctAnswer}
+                              onChange={(e) => updateQuestion(index, 'correctAnswer', e.target.value)}
+                              placeholder="Enter correct answer"
+                              className="input-field"
+                              required
+                            />
+                          )}
                         </div>
                       </div>
 
                       {question.type === QUESTION_TYPES.MCQ && (
                         <div>
                           <label className="block text-sm font-medium text-gray-700 mb-2">
-                            Options
+                            Options & Correct Answer
                           </label>
-                          <div className="space-y-2">
+                          <div className="space-y-3">
                             {question.options.map((option, optionIndex) => (
-                              <div key={optionIndex} className="flex items-center space-x-2">
+                              <div key={optionIndex} className="flex items-center space-x-3 p-3 bg-white border border-gray-200 rounded-lg">
                                 <input
                                   type="text"
                                   value={option}
@@ -460,6 +482,16 @@ const CreateQuiz = () => {
                                   className="input-field flex-1"
                                   required
                                 />
+                                <div className="flex items-center space-x-2">
+                                  <input
+                                    type="radio"
+                                    name={`correct-${index}`}
+                                    checked={question.correctAnswer === option}
+                                    onChange={() => handleCorrectAnswerChange(index, option)}
+                                    className="text-green-600 focus:ring-green-500"
+                                  />
+                                  <span className="text-sm text-green-600 font-medium">Correct</span>
+                                </div>
                                 {question.options.length > 2 && (
                                   <button
                                     type="button"
@@ -479,6 +511,13 @@ const CreateQuiz = () => {
                               + Add Option
                             </button>
                           </div>
+                          {question.correctAnswer && (
+                            <div className="mt-3 p-2 bg-green-50 border border-green-200 rounded">
+                              <span className="text-sm text-green-800">
+                                ✓ Correct answer selected: <strong>{question.correctAnswer}</strong>
+                              </span>
+                            </div>
+                          )}
                         </div>
                       )}
 
