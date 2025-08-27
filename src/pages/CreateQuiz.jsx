@@ -118,6 +118,13 @@ const CreateQuiz = () => {
       return
     }
 
+    // Validate access code is numeric and has proper length
+    if (!/^\d{4,8}$/.test(quizData.accessCode)) {
+      setError('Access code must be 4-8 digits long and contain only numbers')
+      setLoading(false)
+      return
+    }
+
     if (questions.some(q => !q.text.trim())) {
       setError('Please fill in all question texts')
       setLoading(false)
@@ -141,7 +148,7 @@ const CreateQuiz = () => {
           {
             title: quizData.title.trim(),
             description: quizData.description.trim(),
-            access_code: quizData.accessCode.trim().toUpperCase(),
+            access_code: quizData.accessCode.trim(),
             status: QUIZ_STATUS.WAITING,
             total_timer_minutes: quizData.totalTimerMinutes || null,
             question_timer_seconds: quizData.questionTimerSeconds || null,
@@ -309,12 +316,19 @@ const CreateQuiz = () => {
                     <input
                       type="text"
                       value={quizData.accessCode}
-                      onChange={(e) => setQuizData({ ...quizData, accessCode: e.target.value.toUpperCase() })}
-                      placeholder="Enter access code"
+                      onChange={(e) => {
+                        // Only allow numeric input
+                        const numericValue = e.target.value.replace(/[^0-9]/g, '')
+                        setQuizData({ ...quizData, accessCode: numericValue })
+                      }}
+                      placeholder="Enter numeric access code (e.g., 123456)"
                       className="input-field font-mono"
                       maxLength={8}
+                      pattern="[0-9]*"
+                      inputMode="numeric"
                       required
                     />
+                    <p className="text-xs text-gray-500 mt-1">Enter only numbers (0-9)</p>
                   </div>
                 </div>
                 
