@@ -28,7 +28,7 @@ const AccessCodeInput = () => {
       sessionStorage.setItem('currentQuiz', JSON.stringify(mockQuiz))
       
       // Navigate to enter name page
-      window.location.href = '/enter-name'
+      window.location.href = '/pages/EnterName/enter-name'
     } else {
       setError('Invalid access code. Please check and try again.')
     }
@@ -95,3 +95,4 @@ const AccessCodeInput = () => {
 }
 
 export default AccessCodeInput
+
